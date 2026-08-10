@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import ssl
+import time
+from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -330,18 +332,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 await _log("warning", f"Recording start failed (non-fatal): {_exc}")
 
     # ── Greeting ─────────────────────────────────────────────────────────────
-    _active_model = os.getenv("GEMINI_MODEL", "")
-    if "3.1" in _active_model or "2.5" in _active_model:
-        await _log("info", "Gemini native-audio: model will greet autonomously from system prompt")
-    else:
-        greeting = (
-            f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
-            if phone_number else "Greet the caller warmly."
-        )
-        try:
-            await session.generate_reply(instructions=greeting)
-        except Exception as _gr_exc:
-            await _log("warning", f"generate_reply failed: {_gr_exc}")
+    greeting = (
+        f"The call just connected. Greet the lead immediately and ask: 'Hi, am I speaking with {lead_name}?'"
+        if phone_number else "Greet the caller warmly."
+    )
+    try:
+        await session.generate_reply(instructions=greeting)
+    except Exception as _gr_exc:
+        await _log("info", f"Session ready & listening for speech: {_gr_exc}")
 
     # ── Keep session alive until SIP participant actually leaves ─────────────
     if phone_number:
