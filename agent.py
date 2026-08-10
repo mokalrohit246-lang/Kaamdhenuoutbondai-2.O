@@ -118,9 +118,9 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
             from google.genai import types as _gt
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
-                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=2000,
-                    prefix_padding_ms=200,
+                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
+                    silence_duration_ms=450,
+                    prefix_padding_ms=100,
                 ),
             )
             _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
@@ -128,7 +128,7 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 trigger_tokens=25600,
                 sliding_window=_gt.SlidingWindow(target_tokens=12800),
             )
-            logger.info("Silence-prevention config applied (VAD LOW, transparent resumption, context compression)")
+            logger.info("Ultra-fast voice turn-taking applied (450ms silence detection, high sensitivity)")
         except Exception as _cfg_err:
             logger.warning("Could not build silence-prevention config: %s", _cfg_err)
             _realtime_input_cfg = None
