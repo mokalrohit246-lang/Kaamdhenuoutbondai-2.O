@@ -461,40 +461,85 @@ tr:last-child td { border-bottom: none; }
 
   <!-- 📞 Single Call Tab -->
   <section id="tab-call" class="tab-panel">
-    <div class="card" style="max-width: 600px; margin: 0 auto;">
-      <h2>Initiate Single Call</h2>
+    <div class="card" style="max-width: 680px; margin: 0 auto;">
+      <div class="flex justify-between items-center mb-4">
+        <h2>Initiate Single Call</h2>
+        <span class="badge" style="background:rgba(212,175,55,0.15); color:#D4AF37; border:1px solid rgba(212,175,55,0.3);">Real Estate AI Dialer</span>
+      </div>
       <form id="frm-single-call" onsubmit="event.preventDefault(); submitSingleCall();">
-        <div class="form-group">
-          <label>Phone Number (E.164 required) *</label>
-          <input type="text" id="sc-phone" placeholder="+1234567890" required>
+        <div class="grid grid-2">
+          <div class="form-group">
+            <label>Phone Number (E.164 required) *</label>
+            <input type="text" id="sc-phone" placeholder="+919876543210" required>
+          </div>
+          <div class="form-group">
+            <label>Lead Name *</label>
+            <input type="text" id="sc-lead-name" placeholder="John Doe" required>
+          </div>
+        </div>
+        <div class="grid grid-2">
+          <div class="form-group">
+            <label>Business Name</label>
+            <input type="text" id="sc-business" placeholder="Kaamdhenu Real Estate">
+          </div>
+          <div class="form-group">
+            <label>Property Type / Service</label>
+            <input type="text" id="sc-service" placeholder="3BHK Luxury Apartment">
+          </div>
+        </div>
+        <div class="grid grid-2">
+          <div class="form-group">
+            <label>Budget</label>
+            <input type="text" id="sc-budget" placeholder="e.g. ₹1.5 - 2 Cr">
+          </div>
+          <div class="form-group">
+            <label>Preferred Location</label>
+            <input type="text" id="sc-location" placeholder="e.g. South Delhi / Bandra">
+          </div>
         </div>
         <div class="form-group">
-          <label>Lead Name</label>
-          <input type="text" id="sc-lead-name" placeholder="John Doe">
+          <label>Lead Context / Special Notes</label>
+          <input type="text" id="sc-notes" placeholder="Interested in ready-to-move properties with balcony">
         </div>
         <div class="form-group">
-          <label>Business Name</label>
-          <input type="text" id="sc-business" placeholder="Acme Corp">
-        </div>
-        <div class="form-group">
-          <label>Service Type</label>
-          <input type="text" id="sc-service" placeholder="Consulting">
-        </div>
-        <div class="form-group">
-          <label>Agent Profile</label>
+          <label>Agent Voice Profile</label>
           <select id="sc-agent-profile">
-            <option value="">Default Profile</option>
+            <option value="">Default AI Profile</option>
             <!-- populated dynamically -->
           </select>
         </div>
         <div class="form-group">
-          <label><input type="checkbox" onchange="$('sc-custom-prompt-container').style.display = this.checked ? 'block' : 'none'"> Use Custom Prompt</label>
+          <label><input type="checkbox" onchange="$('sc-custom-prompt-container').style.display = this.checked ? 'block' : 'none'"> Use Custom Prompt Override</label>
         </div>
         <div class="form-group" id="sc-custom-prompt-container" style="display:none;">
-          <textarea id="sc-custom-prompt" placeholder="Override default system prompt for this call..."></textarea>
+          <textarea id="sc-custom-prompt" placeholder="Override default system prompt for this specific call..."></textarea>
         </div>
-        <button type="submit" class="btn btn-primary w-full" style="width:100%" id="btn-sc-submit">Initiate Call</button>
+        <div class="flex gap-2 mt-4">
+          <button type="submit" class="btn btn-primary" style="flex:1;" id="btn-sc-submit">📞 Initiate Call</button>
+          <button type="button" class="btn btn-secondary" onclick="clearSingleCallForm()">Clear Form</button>
+        </div>
       </form>
+
+      <!-- Active Call Live Status Card -->
+      <div id="sc-active-card" class="card mt-4" style="display:none; background: rgba(0,240,255,0.04); border: 1px solid rgba(0,240,255,0.3); border-radius: 8px; padding: 1.25rem;">
+        <div class="flex justify-between items-center mb-3">
+          <h3 style="color:var(--accent2); margin:0; font-size:1.1rem; display:flex; items-center; gap:0.5rem;">
+            <span class="pulsing-dot" style="width:8px; height:8px; background:var(--accent2); border-radius:50%; display:inline-block;"></span>
+            Active Call Dispatch
+          </h3>
+          <span id="sc-status-badge" class="badge" style="background:rgba(212,175,55,0.2); color:#D4AF37;">Dispatched</span>
+        </div>
+        <div class="grid grid-2 text-sm mb-3" style="gap:0.75rem;">
+          <div><strong style="color:var(--text2)">Lead:</strong> <span id="sc-disp-lead" style="color:#fff">-</span></div>
+          <div><strong style="color:var(--text2)">Phone:</strong> <span id="sc-disp-phone" style="color:#fff">-</span></div>
+          <div><strong style="color:var(--text2)">Room:</strong> <span id="sc-disp-room" class="text-mono" style="color:var(--accent2)">-</span></div>
+          <div><strong style="color:var(--text2)">Call ID:</strong> <span id="sc-disp-id" class="text-mono" style="color:#aaa">-</span></div>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-sm btn-primary" onclick="switchTab('tab-logs-calls')">View in Call Logs ➔</button>
+          <button class="btn btn-sm btn-secondary" onclick="switchTab('tab-crm')">View in CRM ➔</button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -769,7 +814,7 @@ tr:last-child td { border-bottom: none; }
         <div class="form-group"><label>URL</label><input type="text" id="set-lk-url"></div>
         <div class="form-group"><label>API Key</label><div class="input-with-icon"><input type="password" id="set-lk-key"><span class="toggle-pwd" onclick="togglePwd('set-lk-key')">👁</span></div></div>
         <div class="form-group"><label>API Secret</label><div class="input-with-icon"><input type="password" id="set-lk-secret"><span class="toggle-pwd" onclick="togglePwd('set-lk-secret')">👁</span></div></div>
-        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('livekit', ['lk-url', 'lk-key', 'lk-secret'])">Save LiveKit</button>
+        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('livekit', ['set-lk-url', 'set-lk-key', 'set-lk-secret'])">Save LiveKit</button>
       </div>
       
       <!-- Gemini -->
@@ -783,7 +828,7 @@ tr:last-child td { border-bottom: none; }
           </select>
         </div>
         <div class="form-group"><label><input type="checkbox" id="set-gemini-rt"> Enable Realtime Audio API</label></div>
-        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('gemini', ['gemini-key', 'gemini-model', 'gemini-rt'])">Save Gemini</button>
+        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('gemini', ['set-gemini-key', 'set-gemini-model', 'set-gemini-rt'])">Save Gemini</button>
       </div>
 
       <!-- Vobiz SIP -->
@@ -795,7 +840,7 @@ tr:last-child td { border-bottom: none; }
         <div class="form-group"><label>Outbound Number</label><input type="text" id="set-sip-out"></div>
         <div class="form-group"><label>Trunk ID</label><input type="text" id="set-sip-trunk"></div>
         <div class="flex gap-2">
-          <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('sip', ['sip-domain', 'sip-user', 'sip-pwd', 'sip-out', 'sip-trunk'])">Save SIP</button>
+          <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk'])">Save SIP</button>
           <button class="btn btn-sm btn-danger" onclick="createSIPTrunk()">⚡ Create SIP Trunk</button>
         </div>
       </div>
@@ -826,7 +871,7 @@ tr:last-child td { border-bottom: none; }
         <div class="form-group"><label>Region</label><input type="text" id="set-s3-region"></div>
         <div class="form-group"><label>Access Key</label><input type="text" id="set-s3-ak"></div>
         <div class="form-group"><label>Secret Key</label><div class="input-with-icon"><input type="password" id="set-s3-sk"><span class="toggle-pwd" onclick="togglePwd('set-s3-sk')">👁</span></div></div>
-        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('s3', ['s3-url', 's3-bucket', 's3-region', 's3-ak', 's3-sk'])">Save S3</button>
+        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('s3', ['set-s3-url', 'set-s3-bucket', 'set-s3-region', 'set-s3-ak', 'set-s3-sk'])">Save S3</button>
       </div>
 
       <!-- Cal.com -->
@@ -835,7 +880,7 @@ tr:last-child td { border-bottom: none; }
         <div class="form-group"><label>API Key</label><div class="input-with-icon"><input type="password" id="set-cal-key"><span class="toggle-pwd" onclick="togglePwd('set-cal-key')">👁</span></div></div>
         <div class="form-group"><label>Event Type ID</label><input type="text" id="set-cal-event"></div>
         <div class="form-group"><label>Timezone</label><input type="text" id="set-cal-tz" value="America/Los_Angeles"></div>
-        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('cal', ['cal-key', 'cal-event', 'cal-tz'])">Save Cal.com</button>
+        <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('cal', ['set-cal-key', 'set-cal-event', 'set-cal-tz'])">Save Cal.com</button>
       </div>
 
       <!-- Tools -->
@@ -1068,12 +1113,17 @@ function togglePwd(id) {
 }
 
 function getBadgeHtml(outcome) {
-  outcome = (outcome||'').toLowerCase();
+  outcome = (outcome || '').toLowerCase();
   let cls = 'badge-default';
-  if (outcome === 'booked') cls = 'badge-booked';
-  else if (outcome === 'not_interested') cls = 'badge-not-interested';
-  else if (outcome === 'voicemail') cls = 'badge-voicemail';
-  return `<span class="badge ${cls}">${outcome.toUpperCase() || 'UNKNOWN'}</span>`;
+  let color = '#aaa';
+  let bg = 'rgba(255,255,255,0.05)';
+  if (outcome === 'booked') { cls = 'badge-booked'; bg = 'rgba(212,175,55,0.2)'; color = '#D4AF37'; }
+  else if (outcome === 'in_progress') { bg = 'rgba(0,240,255,0.2)'; color = '#00F0FF'; }
+  else if (outcome === 'ringing' || outcome === 'initiated') { bg = 'rgba(255,170,0,0.2)'; color = '#ffaa00'; }
+  else if (outcome === 'not_interested' || outcome === 'failed') { cls = 'badge-not-interested'; bg = 'rgba(255,77,77,0.2)'; color = '#ff4d4d'; }
+  else if (outcome === 'voicemail') { cls = 'badge-voicemail'; bg = 'rgba(255,170,0,0.2)'; color = '#ffaa00'; }
+  else if (outcome === 'completed') { bg = 'rgba(0,255,136,0.2)'; color = '#00ff88'; }
+  return `<span class="badge ${cls}" style="background:${bg}; color:${color}; border:1px solid ${color}40;">${outcome.toUpperCase() || 'UNKNOWN'}</span>`;
 }
 
 // Navigation
@@ -1174,14 +1224,27 @@ function _renderCharts(d) {
 async function submitSingleCall() {
   const btn = $('btn-sc-submit');
   btn.disabled = true;
-  btn.innerText = 'Initiating...';
+  btn.innerText = 'Initiating Call...';
   
+  const phone = $('sc-phone').value.trim();
+  const lead_name = $('sc-lead-name').value.trim() || 'there';
+  const business_name = $('sc-business').value.trim() || 'Kaamdhenu Real Estate';
+  const service_type = $('sc-service').value.trim() || 'Property Inquiry';
+  const budget = $('sc-budget') ? $('sc-budget').value.trim() : '';
+  const location = $('sc-location') ? $('sc-location').value.trim() : '';
+  const notes = $('sc-notes') ? $('sc-notes').value.trim() : '';
+  const agent_profile_id = $('sc-agent-profile').value || null;
+
   const payload = {
-    phone: $('sc-phone').value,
-    lead_name: $('sc-lead-name').value,
-    business_name: $('sc-business').value,
-    service_type: $('sc-service').value,
-    agent_profile_id: $('sc-agent-profile').value || null
+    phone,
+    lead_name,
+    business_name,
+    service_type,
+    property_type: service_type,
+    budget: budget || null,
+    location: location || null,
+    notes: notes || null,
+    agent_profile_id,
   };
   
   if ($('sc-custom-prompt-container') && $('sc-custom-prompt-container').style.display !== 'none') {
@@ -1189,15 +1252,40 @@ async function submitSingleCall() {
   }
   
   try {
-    await apiPost('/api/call', payload);
-    toast('Call initiated successfully', 'ok');
-    $('frm-single-call').reset();
+    const res = await apiPost('/api/call', payload);
+    toast('Call dispatched to ' + phone, 'ok');
+    
+    // Display the Active Call Live Card (Keep form data intact!)
+    const activeCard = $('sc-active-card');
+    if (activeCard) {
+      activeCard.style.display = 'block';
+      $('sc-disp-lead').innerText = lead_name;
+      $('sc-disp-phone').innerText = phone;
+      $('sc-disp-room').innerText = res.room || '-';
+      $('sc-disp-id').innerText = (res.call_id || '').slice(0, 8);
+      $('sc-status-badge').innerText = 'Dispatched / Ringing';
+      $('sc-status-badge').style.background = 'rgba(212,175,55,0.2)';
+      $('sc-status-badge').style.color = '#D4AF37';
+    }
+
+    // Refresh background records
+    setTimeout(() => {
+      loadCalls();
+      loadStats();
+      loadCRM();
+    }, 1000);
   } catch (e) {
-    toast('Failed to initiate call', 'err');
+    toast('Failed to initiate call: ' + (e.message || e), 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerText = '📞 Initiate Call';
   }
-  
-  btn.disabled = false;
-  btn.innerText = 'Initiate Call';
+}
+
+function clearSingleCallForm() {
+  $('frm-single-call').reset();
+  const card = $('sc-active-card');
+  if (card) card.style.display = 'none';
 }
 
 // Batch Call
@@ -1497,36 +1585,72 @@ window.toggleCRMRow = async (tr, phone) => {
 
 // Settings — maps form IDs to Supabase settings keys
 const SETTINGS_MAP = {
-  'set-lk-url':'LIVEKIT_URL','set-lk-key':'LIVEKIT_API_KEY','set-lk-secret':'LIVEKIT_API_SECRET',
-  'set-gemini-key':'GOOGLE_API_KEY','set-gemini-model':'GEMINI_MODEL','set-gemini-voice':'GEMINI_TTS_VOICE','set-gemini-rt':'USE_GEMINI_REALTIME',
-  'set-sip-domain':'VOBIZ_SIP_DOMAIN','set-sip-user':'VOBIZ_USERNAME','set-sip-pass':'VOBIZ_PASSWORD',
-  'set-sip-out':'VOBIZ_OUTBOUND_NUMBER','set-sip-trunk':'OUTBOUND_TRUNK_ID','set-transfer':'DEFAULT_TRANSFER_NUMBER',
-  'set-tw-sid':'TWILIO_ACCOUNT_SID','set-tw-token':'TWILIO_AUTH_TOKEN','set-tw-from':'TWILIO_FROM_NUMBER',
-  'set-s3-ak':'S3_ACCESS_KEY_ID','set-s3-sk':'S3_SECRET_ACCESS_KEY','set-s3-url':'S3_ENDPOINT_URL','set-s3-region':'S3_REGION','set-s3-bucket':'S3_BUCKET',
-  'set-wa-sid':'TWILIO_WA_SID','set-wa-token':'TWILIO_WA_TOKEN','set-wa-from':'TWILIO_WA_FROM',
-  'set-cal-key':'CALCOM_API_KEY','set-cal-event':'CALCOM_EVENT_TYPE_ID','set-cal-tz':'CALCOM_TIMEZONE'
+  'set-lk-url':'LIVEKIT_URL',
+  'set-lk-key':'LIVEKIT_API_KEY',
+  'set-lk-secret':'LIVEKIT_API_SECRET',
+  'set-gemini-key':'GOOGLE_API_KEY',
+  'set-gemini-model':'GEMINI_MODEL',
+  'set-gemini-voice':'GEMINI_TTS_VOICE',
+  'set-gemini-rt':'USE_GEMINI_REALTIME',
+  'set-sip-domain':'VOBIZ_SIP_DOMAIN',
+  'set-sip-user':'VOBIZ_USERNAME',
+  'set-sip-pwd':'VOBIZ_PASSWORD',
+  'set-sip-out':'VOBIZ_OUTBOUND_NUMBER',
+  'set-sip-trunk':'OUTBOUND_TRUNK_ID',
+  'set-transfer':'DEFAULT_TRANSFER_NUMBER',
+  'set-tw-sid':'TWILIO_ACCOUNT_SID',
+  'set-tw-tok':'TWILIO_AUTH_TOKEN',
+  'set-tw-from':'TWILIO_FROM_NUMBER',
+  'set-s3-ak':'S3_ACCESS_KEY_ID',
+  'set-s3-sk':'S3_SECRET_ACCESS_KEY',
+  'set-s3-url':'S3_ENDPOINT_URL',
+  'set-s3-region':'S3_REGION',
+  'set-s3-bucket':'S3_BUCKET',
+  'set-wa-sid':'TWILIO_WA_SID',
+  'set-wa-token':'TWILIO_WA_TOKEN',
+  'set-wa-from':'TWILIO_WA_FROM',
+  'set-cal-key':'CALCOM_API_KEY',
+  'set-cal-event':'CALCOM_EVENT_TYPE_ID',
+  'set-cal-tz':'CALCOM_TIMEZONE'
 };
+
 async function loadSettings() {
-  const d = await api('/api/settings');
-  for(const [formId, dbKey] of Object.entries(SETTINGS_MAP)) {
-    const el = $(formId);
-    if(!el || !d[dbKey]) continue;
-    const info = d[dbKey];
-    if(el.type==='checkbox') { el.checked = info.value==='true'; }
-    else if(el.type!=='password') { el.value = info.value || ''; }
-    // Show configured badge if present
-    const badge = el.closest('.settings-group')?.querySelector('.badge-configured');
-    if(badge && info.configured) badge.style.display = 'inline-block';
-  }
-  // Load enabled tools
-  const et = d.ENABLED_TOOLS;
-  if(et && et.value) {
-    try {
-      const tools = JSON.parse(et.value);
-      document.querySelectorAll('#tool-toggles-container input[type=checkbox]').forEach(cb => {
-        cb.checked = tools.includes(cb.value);
-      });
-    } catch(e){}
+  try {
+    const d = await api('/api/settings');
+    if (!d || typeof d !== 'object') return;
+
+    for (const [formId, dbKey] of Object.entries(SETTINGS_MAP)) {
+      const el = $(formId);
+      if (!el || !d[dbKey]) continue;
+      const info = d[dbKey];
+      if (el.type === 'checkbox') {
+        el.checked = (info.value === 'true' || info.value === true);
+      } else if (el.type !== 'password') {
+        el.value = info.value || '';
+      }
+    }
+
+    // Direct, reliable badge visibility updates
+    if ($('badge-lk'))     $('badge-lk').style.display = (d.LIVEKIT_URL?.configured && d.LIVEKIT_API_KEY?.configured) ? 'inline-block' : 'none';
+    if ($('badge-gemini')) $('badge-gemini').style.display = (d.GOOGLE_API_KEY?.configured) ? 'inline-block' : 'none';
+    if ($('badge-sip'))    $('badge-sip').style.display = (d.VOBIZ_SIP_DOMAIN?.configured && d.VOBIZ_USERNAME?.configured) ? 'inline-block' : 'none';
+    if ($('badge-twilio')) $('badge-twilio').style.display = (d.TWILIO_ACCOUNT_SID?.configured) ? 'inline-block' : 'none';
+    if ($('badge-wa'))     $('badge-wa').style.display = (d.TWILIO_WA_SID?.configured || d.TWILIO_WA_FROM?.configured) ? 'inline-block' : 'none';
+    if ($('badge-s3'))     $('badge-s3').style.display = (d.S3_ACCESS_KEY_ID?.configured || d.S3_BUCKET?.configured) ? 'inline-block' : 'none';
+    if ($('badge-cal'))    $('badge-cal').style.display = (d.CALCOM_API_KEY?.configured) ? 'inline-block' : 'none';
+
+    // Load enabled tools
+    const et = d.ENABLED_TOOLS;
+    if (et && et.value) {
+      try {
+        const tools = JSON.parse(et.value);
+        document.querySelectorAll('#tool-toggles-container input[type=checkbox]').forEach(cb => {
+          cb.checked = tools.includes(cb.value);
+        });
+      } catch(e){}
+    }
+  } catch (err) {
+    console.warn("Could not load settings:", err);
   }
 }
 
@@ -1535,20 +1659,30 @@ window.saveSettingsGroup = async (group, formIds) => {
   formIds.forEach(fid => {
     const el = $(fid);
     const dbKey = SETTINGS_MAP[fid];
-    if(!el || !dbKey) return;
-    const val = el.type==='checkbox' ? String(el.checked) : el.value;
-    if(val) settings[dbKey] = val;
+    if (!el || !dbKey) return;
+    const val = el.type === 'checkbox' ? String(el.checked) : el.value.trim();
+    if (val !== "") settings[dbKey] = val;
   });
-  await apiPost('/api/settings', { settings });
-  toast(`${group} settings saved`);
-  loadSettings();
+  try {
+    await apiPost('/api/settings', { settings });
+    toast(`${group.toUpperCase()} settings saved`, 'ok');
+    loadSettings();
+  } catch (e) {
+    toast(`Failed to save ${group} settings: ` + (e.message || e), 'err');
+  }
 };
 window.createSIPTrunk = async () => {
   try {
-    await apiPost('/api/setup/trunk');
-    toast('SIP Trunk created successfully');
+    toast('Creating LiveKit SIP Trunk...', 'info');
+    const res = await apiPost('/api/setup/trunk');
+    toast('SIP Trunk created successfully: ' + (res.trunk_id || ''), 'ok');
+    if ($('set-sip-trunk') && res.trunk_id) {
+      $('set-sip-trunk').value = res.trunk_id;
+    }
     loadSettings();
-  } catch(e) { toast('Failed to create SIP Trunk', 'err'); }
+  } catch(e) {
+    toast('Failed to create SIP Trunk: ' + (e.message || e), 'err');
+  }
 };
 window.saveToolToggles = async () => {
   const enabled = [];

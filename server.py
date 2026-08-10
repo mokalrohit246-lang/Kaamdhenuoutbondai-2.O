@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import ssl
+import uuid
 import aiohttp
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,7 @@ from db import (
     get_contacts, get_errors, get_logs, get_setting, get_stats, init_db, log_error,
     save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
     add_campaign_minutes, check_campaign_budget, get_whatsapp_logs,
+    insert_initial_call, update_call_status, add_contact_memory,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -51,7 +53,7 @@ except ImportError:
     _scheduler = None
     logger.warning("APScheduler not installed — campaign scheduling disabled")
 
-app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
+app = FastAPI(title="OutboundAI Dashboard", version="2.0.0")
 
 
 @app.on_event("startup")
@@ -68,7 +70,7 @@ async def _shutdown():
 
 
 async def eff(key: str) -> str:
-    """Resolve effective configuration with VPS environment variables as the single source of truth."""
+    """Resolve effective configuration with VPS environment variables as single source of truth."""
     env_val = os.getenv(key, "").strip()
     if env_val:
         return env_val
@@ -83,6 +85,7 @@ async def health_check():
         "gemini_configured": bool(os.getenv("GOOGLE_API_KEY")),
         "supabase_configured": bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_KEY")),
         "trunk_configured": bool(os.getenv("OUTBOUND_TRUNK_ID")),
+        "outbound_number": os.getenv("VOBIZ_OUTBOUND_NUMBER", ""),
     }
 
 
@@ -93,6 +96,10 @@ class CallRequest(BaseModel):
     lead_name: str = "there"
     business_name: str = "our company"
     service_type: str = "our service"
+    property_type: Optional[str] = None
+    budget: Optional[str] = None
+    location: Optional[str] = None
+    notes: Optional[str] = None
     system_prompt: Optional[str] = None
     agent_profile_id: Optional[str] = None
 
@@ -157,12 +164,32 @@ async def api_dispatch_call(req: CallRequest):
     secret = await eff("LIVEKIT_API_SECRET")
 
     if not all([url, key, secret]):
-        raise HTTPException(400, "LiveKit credentials not configured. Go to Settings → LiveKit.")
+        raise HTTPException(400, "LiveKit credentials not configured. Go to Settings -> LiveKit.")
 
     phone = req.phone.strip()
     if not phone.startswith("+"):
-        raise HTTPException(400, "Phone must be in E.164 format: +919876543210")
+        raise HTTPException(400, "Phone must be in E.164 format (e.g. +919876543210)")
 
+    call_id = str(uuid.uuid4())
+    room_name = f"call-{phone.replace('+', '')}-{call_id[:6]}"
+
+    # 1. Immediately save initial lead & call record to database (NEVER lose lead data)
+    await insert_initial_call(
+        call_id=call_id, phone_number=phone, lead_name=req.lead_name,
+        service_type=req.service_type, property_type=req.property_type,
+        budget=req.budget, location=req.location, notes=req.notes,
+    )
+
+    # 2. Store initial lead preferences into CRM memory
+    insights = []
+    if req.property_type: insights.append(f"Property: {req.property_type}")
+    if req.budget:        insights.append(f"Budget: {req.budget}")
+    if req.location:      insights.append(f"Location: {req.location}")
+    if req.notes:         insights.append(f"Notes: {req.notes}")
+    if insights:
+        await add_contact_memory(phone, " | ".join(insights))
+
+    # 3. Resolve profile & prompt
     effective_prompt = req.system_prompt
     effective_voice = None
     effective_model = None
@@ -180,12 +207,15 @@ async def api_dispatch_call(req: CallRequest):
     if not effective_prompt:
         effective_prompt = await get_setting("system_prompt", "") or None
 
-    room_name = f"call-{phone.replace('+', '')}-{random.randint(1000, 9999)}"
     metadata: dict = {
+        "call_id": call_id,
         "phone_number": phone,
         "lead_name": req.lead_name,
         "business_name": req.business_name,
         "service_type": req.service_type,
+        "property_type": req.property_type or req.service_type,
+        "budget": req.budget,
+        "location": req.location,
         "system_prompt": effective_prompt,
     }
     if effective_voice:  metadata["voice_override"] = effective_voice
@@ -207,10 +237,17 @@ async def api_dispatch_call(req: CallRequest):
         )
         await lk.aclose()
         await session.close()
-        await log_error("server", f"Call dispatched to {phone}", f"room={room_name}", "info")
-        return {"status": "dispatched", "room": room_name, "phone": phone}
+        await log_error("server", f"Call dispatched to {phone}", f"room={room_name} call_id={call_id}", "info")
+        return {
+            "status": "dispatched",
+            "call_id": call_id,
+            "room": room_name,
+            "phone": phone,
+            "lead_name": req.lead_name,
+        }
     except Exception as exc:
         logger.error("Dispatch error: %s", exc)
+        await update_call_status(call_id, outcome="failed", reason=f"Dispatch error: {exc}")
         raise HTTPException(500, f"Dispatch failed: {exc}")
 
 
@@ -291,16 +328,16 @@ async def api_save_settings(req: SettingsRequest):
 
 @app.post("/api/setup/trunk")
 async def api_setup_trunk():
-    url    = await eff("LIVEKIT_URL")
-    key    = await eff("LIVEKIT_API_KEY")
-    secret = await eff("LIVEKIT_API_SECRET")
+    url        = await eff("LIVEKIT_URL")
+    key        = await eff("LIVEKIT_API_KEY")
+    secret     = await eff("LIVEKIT_API_SECRET")
     sip_domain = await eff("VOBIZ_SIP_DOMAIN")
     username   = await eff("VOBIZ_USERNAME")
     password   = await eff("VOBIZ_PASSWORD")
     phone      = await eff("VOBIZ_OUTBOUND_NUMBER")
 
     if not all([url, key, secret, sip_domain, username, password, phone]):
-        raise HTTPException(400, "Configure LiveKit and Vobiz credentials in Settings first.")
+        raise HTTPException(400, "Configure LiveKit and Vobiz SIP credentials in Settings first.")
 
     try:
         from livekit import api as lk_api
@@ -325,6 +362,7 @@ async def api_setup_trunk():
         os.environ["OUTBOUND_TRUNK_ID"] = trunk_id
         await lk.aclose()
         await session.close()
+        await log_error("server", f"Created LiveKit SIP Trunk: {trunk_id}", f"domain={sip_domain}", "info")
         return {"status": "created", "trunk_id": trunk_id}
     except Exception as exc:
         raise HTTPException(500, f"Trunk creation failed: {exc}")
@@ -419,14 +457,32 @@ async def api_set_default_profile(profile_id: str):
 async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
                          prompt: Optional[str], profile: Optional[dict] = None,
                          campaign_id: Optional[str] = None,
-                         broker_phone: Optional[str] = None) -> bool:
+                         broker_phone: Optional[str] = None,
+                         call_id: Optional[str] = None) -> bool:
     try:
+        cid = call_id or str(uuid.uuid4())
+        phone = contact.get("phone", "")
+        lead_name = contact.get("lead_name", "there")
         saved_prompt = prompt or (await get_setting("system_prompt", "")) or None
+
+        # Insert initial campaign call log
+        await insert_initial_call(
+            call_id=cid, phone_number=phone, lead_name=lead_name,
+            service_type=contact.get("service_type", "our service"),
+            property_type=contact.get("property_type"),
+            budget=contact.get("budget"), location=contact.get("location"),
+            campaign_id=campaign_id,
+        )
+
         metadata: dict = {
-            "phone_number": contact["phone"],
-            "lead_name": contact.get("lead_name", "there"),
+            "call_id": cid,
+            "phone_number": phone,
+            "lead_name": lead_name,
             "business_name": contact.get("business_name", "our company"),
             "service_type": contact.get("service_type", "our service"),
+            "property_type": contact.get("property_type", contact.get("service_type", "our service")),
+            "budget": contact.get("budget"),
+            "location": contact.get("location"),
             "system_prompt": saved_prompt,
         }
         if profile:
@@ -435,11 +491,11 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             if profile.get("voice"):   metadata["voice_override"] = profile["voice"]
             if profile.get("model"):   metadata["model_override"] = profile["model"]
             if profile.get("enabled_tools"): metadata["tools_override"] = profile["enabled_tools"]
-        # Pass campaign context if available
         if campaign_id:
             metadata["campaign_id"] = campaign_id
         if broker_phone:
             metadata["broker_phone"] = broker_phone
+
         await lk.agent_dispatch.create_dispatch(
             lk_api.CreateAgentDispatchRequest(agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata))
         )
@@ -489,53 +545,55 @@ async def _run_campaign(campaign_id: str) -> None:
                 logger.info("Campaign %s hit minute cap — pausing", campaign_id)
                 await update_campaign_status(campaign_id, "paused")
                 break
-            phone = contact.get("phone", "")
-            if not phone.startswith("+"):
+
+            phone = contact.get("phone", "").strip()
+            if not phone:
                 fail_count += 1
                 continue
-            room_name = f"camp-{campaign_id[:8]}-{phone.replace('+','')}-{random.randint(100,999)}"
-            success = await _dispatch_one(
-                lk, lk_api_module, contact, room_name, prompt, profile,
-                campaign_id=campaign_id, broker_phone=broker_phone,
-            )
-            if success:
-                ok_count += 1
-            else:
+            cid = str(uuid.uuid4())
+            room_name = f"camp-{campaign_id[:6]}-{phone.replace('+', '')}-{cid[:4]}"
+            try:
+                await lk.room.create_room(lk_api_module.CreateRoomRequest(name=room_name, empty_timeout=300))
+                ok = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile,
+                                         campaign_id=campaign_id, broker_phone=broker_phone, call_id=cid)
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+            except Exception as exc:
+                logger.error("Failed to create room for %s: %s", phone, exc)
                 fail_count += 1
+
             if i < len(contacts) - 1:
                 await asyncio.sleep(delay)
-        await lk.aclose()
-    except Exception as exc:
-        logger.error("Campaign run error: %s", exc)
-    finally:
-        await session.close()
 
-    await update_campaign_run_stats(campaign_id, ok_count, fail_count)
-    logger.info("Campaign %s done — %d dispatched, %d failed", campaign_id, ok_count, fail_count)
+        await update_campaign_run_stats(campaign_id, ok_count, fail_count)
+        await lk.aclose()
+        await session.close()
+    except Exception as exc:
+        logger.error("Campaign execution error: %s", exc)
 
 
 async def _reschedule_all_campaigns() -> None:
     if not _scheduler:
         return
-    try:
-        campaigns = await get_all_campaigns()
-        for c in campaigns:
-            if c.get("status") == "active" and c.get("schedule_type") in ("daily", "weekdays"):
-                _schedule_campaign(c["id"], c["schedule_type"], c.get("schedule_time", "09:00"))
-    except Exception as exc:
-        logger.warning("Could not reschedule campaigns: %s", exc)
+    campaigns = await get_all_campaigns()
+    for c in campaigns:
+        st = c.get("schedule_type")
+        if st in ("daily", "weekdays") and c.get("status") == "active":
+            _schedule_campaign(c["id"], st, c.get("schedule_time", "09:00"))
 
 
 def _schedule_campaign(campaign_id: str, schedule_type: str, schedule_time: str) -> None:
     if not _scheduler:
         return
-    job_id = f"campaign_{campaign_id}"
-    if _scheduler.get_job(job_id):
-        _scheduler.remove_job(job_id)
     try:
-        hour, minute = map(int, schedule_time.split(":"))
-    except (ValueError, AttributeError):
+        parts = schedule_time.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except Exception:
         hour, minute = 9, 0
+    job_id = f"campaign_{campaign_id}"
     if schedule_type == "daily":
         trigger = CronTrigger(hour=hour, minute=minute)
     else:

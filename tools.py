@@ -11,7 +11,7 @@ from db import (
     check_slot, get_next_available, insert_appointment, log_call, log_error,
     get_calls_by_phone, get_appointments_by_phone,
     add_contact_memory, get_contact_memory, compress_contact_memory,
-    log_whatsapp_message,
+    log_whatsapp_message, update_call_status,
 )
 
 logger = logging.getLogger("appointment-tools")
@@ -31,6 +31,9 @@ class AppointmentTools(llm.ToolContext):
         self.ctx = ctx
         self.phone_number = phone_number
         self.lead_name = lead_name
+        self.call_id: Optional[str] = None
+        self.outcome: Optional[str] = None
+        self.end_reason: Optional[str] = None
         self._call_start_time = time.time()
         self._sip_domain = os.getenv("VOBIZ_SIP_DOMAIN", "")
         self.recording_url: Optional[str] = None
@@ -39,6 +42,9 @@ class AppointmentTools(llm.ToolContext):
         self.broker_phone: Optional[str] = None
         self.business_name: str = "our company"
         self.service_type: str = "our service"
+        self.property_type: Optional[str] = None
+        self.budget: Optional[str] = None
+        self.location: Optional[str] = None
         super().__init__(tools=[])
 
     def build_tool_list(self, enabled: list) -> list:
@@ -79,6 +85,8 @@ class AppointmentTools(llm.ToolContext):
         """
         try:
             booking_id = await insert_appointment(name, phone, date, time, service)
+            if self.call_id:
+                await update_call_status(self.call_id, outcome="booked", reason=f"Appointment booked: {booking_id}")
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
         except Exception as exc:
             return "Technical issue saving the booking. Our team will confirm shortly."
@@ -90,13 +98,26 @@ class AppointmentTools(llm.ToolContext):
         outcome: 'booked' | 'not_interested' | 'wrong_number' | 'voicemail' | 'no_answer' | 'callback_requested'
         reason: brief description
         """
-        duration = int(time.time() - self._call_start_time)
+        self.outcome = outcome
+        self.end_reason = reason
+        duration = max(0, int(time.time() - self._call_start_time))
         try:
-            await log_call(
-                phone_number=self.phone_number or "unknown",
-                lead_name=self.lead_name, outcome=outcome, reason=reason,
-                duration_seconds=duration, recording_url=self.recording_url,
-            )
+            if self.call_id:
+                await update_call_status(
+                    call_id=self.call_id,
+                    outcome=outcome,
+                    reason=reason,
+                    duration_seconds=duration,
+                    recording_url=self.recording_url,
+                    campaign_id=self.campaign_id,
+                )
+            else:
+                await log_call(
+                    phone_number=self.phone_number or "unknown",
+                    lead_name=self.lead_name, outcome=outcome, reason=reason,
+                    duration_seconds=duration, recording_url=self.recording_url,
+                    campaign_id=self.campaign_id,
+                )
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
         try:

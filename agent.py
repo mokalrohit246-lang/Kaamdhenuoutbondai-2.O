@@ -27,7 +27,7 @@ except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation, silero
 
-from db import init_db, log_error, get_enabled_tools
+from db import init_db, log_error, get_enabled_tools, update_call_status
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -50,8 +50,8 @@ async def _log(level: str, msg: str, detail: str = "") -> None:
 
 def load_db_settings_to_env() -> None:
     """Load Supabase settings into os.environ ONLY for keys not already set in VPS environment."""
-    url = os.getenv("SUPABASE_URL", "")
-    key = os.getenv("SUPABASE_SERVICE_KEY", "")
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
     if not url or not key:
         return
     try:
@@ -61,7 +61,6 @@ def load_db_settings_to_env() -> None:
         for row in (result.data or []):
             k = row.get("key")
             v = row.get("value")
-            # VPS environment variable is the single source of truth:
             if k and v and not os.getenv(k):
                 os.environ[k] = v
     except Exception as exc:
@@ -105,16 +104,6 @@ except ImportError:
 # ── Session factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
-    """
-    Build AgentSession with Gemini Live or pipeline fallback.
-
-    CRITICAL SILENCE-PREVENTION CONFIG — all 3 required:
-    1. SessionResumptionConfig(transparent=True) → auto-reconnects after timeout
-    2. ContextWindowCompressionConfig → sliding window prevents token limit freeze
-    3. RealtimeInputConfig(END_SENSITIVITY_LOW) → less aggressive VAD, 2s silence threshold
-
-    ⚠️ EndSensitivity MUST use full string form: END_SENSITIVITY_LOW (not .LOW — AttributeError!)
-    """
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "Aoede")
     use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
@@ -167,23 +156,16 @@ class OutboundAssistant(Agent):
 
 
 async def entrypoint(ctx: agents.JobContext) -> None:
-    """
-    Main entrypoint. Called per job. Reads metadata JSON from ctx.job.metadata.
-
-    DIAL-FIRST PATTERN — CRITICAL:
-    Start Gemini Live ONLY after create_sip_participant(wait_until_answered=True) completes.
-    If you start the session during ring time (~20-30s), the Gemini idle timeout fires
-    and the session dies silently before the call is even answered.
-
-    NO close_on_disconnect — SIP legs have brief audio dropouts that look like disconnects.
-    Instead, watch participant_disconnected event for the specific SIP identity.
-    """
     await _log("info", f"Job started — room: {ctx.room.name}")
 
+    call_id: Optional[str] = None
     phone_number: Optional[str] = None
     lead_name = "there"
     business_name = "our company"
     service_type = "our service"
+    property_type: Optional[str] = None
+    budget: Optional[str] = None
+    location: Optional[str] = None
     custom_prompt: Optional[str] = None
     voice_override: Optional[str] = None
     model_override: Optional[str] = None
@@ -195,10 +177,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     if ctx.job.metadata:
         try:
             data = json.loads(ctx.job.metadata)
+            call_id        = data.get("call_id")
             phone_number   = data.get("phone_number")
             lead_name      = data.get("lead_name", lead_name)
             business_name  = data.get("business_name", business_name)
             service_type   = data.get("service_type", service_type)
+            property_type  = data.get("property_type")
+            budget         = data.get("budget")
+            location       = data.get("location")
             custom_prompt  = data.get("system_prompt")
             voice_override = data.get("voice_override")
             model_override = data.get("model_override")
@@ -209,16 +195,20 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except (json.JSONDecodeError, AttributeError):
             await _log("warning", "Invalid JSON in job metadata")
 
-    await _log("info", f"Call job received — phone={phone_number} lead={lead_name} biz={business_name}")
+    await _log("info", f"Call job received — call_id={call_id} phone={phone_number} lead={lead_name} biz={business_name}")
 
     system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
                                   service_type=service_type, custom_prompt=custom_prompt)
     tool_ctx = AppointmentTools(ctx, phone_number, lead_name)
+    tool_ctx.call_id = call_id
     tool_ctx.campaign_id = campaign_id
     tool_ctx.campaign_name = campaign_name
     tool_ctx.broker_phone = broker_phone
     tool_ctx.business_name = business_name
     tool_ctx.service_type = service_type
+    tool_ctx.property_type = property_type
+    tool_ctx.budget = budget
+    tool_ctx.location = location
 
     if voice_override:
         os.environ["GEMINI_TTS_VOICE"] = voice_override
@@ -238,13 +228,21 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
 
     # ── Dial — MUST come before session.start() ──────────────────────────────
+    call_start_time = None
     if phone_number:
-        trunk_id = os.getenv("OUTBOUND_TRUNK_ID")
+        trunk_id = os.getenv("OUTBOUND_TRUNK_ID", "").strip()
         if not trunk_id:
-            await _log("error", "OUTBOUND_TRUNK_ID not set — cannot place outbound call")
+            err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create SIP Trunk' in Settings."
+            await _log("error", err_msg)
+            if call_id:
+                await update_call_status(call_id, outcome="failed", reason=err_msg)
             ctx.shutdown()
             return
+
         await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
+        if call_id:
+            await update_call_status(call_id, outcome="ringing", reason="Dialing customer via SIP")
+
         try:
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
@@ -255,8 +253,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     wait_until_answered=True,
                 )
             )
+            call_start_time = time.time()
+            if call_id:
+                await update_call_status(call_id, outcome="in_progress", reason="Call answered by customer")
         except Exception as exc:
+            err_msg = f"SIP dial failed: {exc}"
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+            if call_id:
+                await update_call_status(call_id, outcome="failed", reason=err_msg)
             ctx.shutdown()
             return
         await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
@@ -268,8 +272,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
 
-    # Use RoomOptions if available (non-deprecated), else fall back
-    # NEVER use close_on_disconnect=True with SIP — drops on any audio blip
     if _HAS_ROOM_OPTIONS:
         from livekit.agents import RoomOptions as _RO
         _session_kwargs = dict(
@@ -314,8 +316,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 await _log("warning", f"Recording start failed (non-fatal): {_exc}")
 
     # ── Greeting ─────────────────────────────────────────────────────────────
-    # gemini-3.1 and gemini-2.5 native-audio speak autonomously from system prompt.
-    # generate_reply() is blocked by the plugin for these models — skip it entirely.
     _active_model = os.getenv("GEMINI_MODEL", "")
     if "3.1" in _active_model or "2.5" in _active_model:
         await _log("info", "Gemini native-audio: model will greet autonomously from system prompt")
@@ -330,8 +330,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("warning", f"generate_reply failed: {_gr_exc}")
 
     # ── Keep session alive until SIP participant actually leaves ─────────────
-    # Without this block, the entrypoint returns and the process spins down.
-    # We watch participant_disconnected for the specific SIP identity.
     if phone_number:
         _sip_identity = f"sip_{phone_number}"
         _disconnect_event = asyncio.Event()
@@ -350,7 +348,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except asyncio.TimeoutError:
             await _log("warning", "Call reached 1-hour safety timeout — shutting down")
 
-        await _log("info", f"SIP participant disconnected — ending session for {phone_number}")
+        final_dur = max(0, int(time.time() - (call_start_time or time.time())))
+        if call_id:
+            await update_call_status(
+                call_id=call_id,
+                outcome=tool_ctx.outcome or "completed",
+                reason=tool_ctx.end_reason or "Call ended normally",
+                duration_seconds=final_dur,
+                recording_url=tool_ctx.recording_url,
+                campaign_id=campaign_id,
+            )
+
+        await _log("info", f"SIP participant disconnected — ending session for {phone_number} (duration={final_dur}s)")
         await session.aclose()
     else:
         _done = asyncio.Event()
