@@ -72,6 +72,14 @@ async def _shutdown():
 async def eff(key: str) -> str:
     """Resolve effective configuration with VPS environment variables as single source of truth."""
     env_val = os.getenv(key, "").strip()
+    if key == "OUTBOUND_TRUNK_ID":
+        # LiveKit SIP Outbound Trunk IDs MUST start with ST_
+        if env_val.startswith("ST_"):
+            return env_val
+        db_val = (await get_setting(key, "")).strip()
+        if db_val.startswith("ST_"):
+            return db_val
+        return env_val if env_val else db_val
     if env_val:
         return env_val
     return await get_setting(key, "")

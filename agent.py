@@ -239,9 +239,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     call_start_time = None
     if phone_number:
         trunk_id = (
-            (trunk_id_override or "") or
-            os.getenv("OUTBOUND_TRUNK_ID", "").strip() or
-            (await get_setting("OUTBOUND_TRUNK_ID", ""))
+            (trunk_id_override if trunk_id_override and trunk_id_override.startswith("ST_") else "") or
+            (os.getenv("OUTBOUND_TRUNK_ID", "").strip() if os.getenv("OUTBOUND_TRUNK_ID", "").strip().startswith("ST_") else "") or
+            (await get_setting("OUTBOUND_TRUNK_ID", "")) or
+            (trunk_id_override or os.getenv("OUTBOUND_TRUNK_ID", ""))
         ).strip()
 
         if not trunk_id:

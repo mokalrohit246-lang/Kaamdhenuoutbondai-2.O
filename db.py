@@ -98,7 +98,10 @@ async def get_all_settings() -> dict:
     for k in KNOWN_KEYS:
         env_val = os.getenv(k, "").strip()
         db_val = db_rows.get(k, "")
-        effective_val = env_val if env_val else db_val
+        if k == "OUTBOUND_TRUNK_ID":
+            effective_val = env_val if env_val.startswith("ST_") else (db_val if db_val.startswith("ST_") else (env_val or db_val))
+        else:
+            effective_val = env_val if env_val else db_val
         is_configured = bool(effective_val)
         if k in SENSITIVE_KEYS:
             out[k] = {"value": "", "configured": is_configured, "source": "env" if env_val else "db" if db_val else "none"}
