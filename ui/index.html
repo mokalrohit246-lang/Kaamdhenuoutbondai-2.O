@@ -1625,7 +1625,13 @@ async function loadSettings() {
       const info = d[dbKey];
       if (el.type === 'checkbox') {
         el.checked = (info.value === 'true' || info.value === true);
-      } else if (el.type !== 'password') {
+      } else if (el.type === 'password') {
+        if (info.configured) {
+          el.placeholder = "•••••••••••• (Active & Saved)";
+        } else {
+          el.placeholder = "Enter key / secret...";
+        }
+      } else {
         el.value = info.value || '';
       }
     }

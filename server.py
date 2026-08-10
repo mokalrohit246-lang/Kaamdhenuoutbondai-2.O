@@ -166,9 +166,18 @@ async def api_dispatch_call(req: CallRequest):
     if not all([url, key, secret]):
         raise HTTPException(400, "LiveKit credentials not configured. Go to Settings -> LiveKit.")
 
-    phone = req.phone.strip()
-    if not phone.startswith("+"):
-        raise HTTPException(400, "Phone must be in E.164 format (e.g. +919876543210)")
+    import re
+    raw_phone = re.sub(r"[^\d+]", "", req.phone.strip())
+    if not raw_phone.startswith("+"):
+        if len(raw_phone) == 10:
+            phone = "+91" + raw_phone
+        else:
+            phone = "+" + raw_phone
+    else:
+        phone = raw_phone
+
+    if len(phone) < 8:
+        raise HTTPException(400, "Phone number must be at least 8 digits with country code (e.g. +919876543210)")
 
     call_id = str(uuid.uuid4())
     room_name = f"call-{phone.replace('+', '')}-{call_id[:6]}"
@@ -207,6 +216,10 @@ async def api_dispatch_call(req: CallRequest):
     if not effective_prompt:
         effective_prompt = await get_setting("system_prompt", "") or None
 
+    trunk_id = await eff("OUTBOUND_TRUNK_ID")
+    google_key = await eff("GOOGLE_API_KEY")
+    sip_domain = await eff("VOBIZ_SIP_DOMAIN")
+
     metadata: dict = {
         "call_id": call_id,
         "phone_number": phone,
@@ -217,6 +230,9 @@ async def api_dispatch_call(req: CallRequest):
         "budget": req.budget,
         "location": req.location,
         "system_prompt": effective_prompt,
+        "outbound_trunk_id": trunk_id,
+        "google_api_key": google_key,
+        "vobiz_sip_domain": sip_domain,
     }
     if effective_voice:  metadata["voice_override"] = effective_voice
     if effective_model:  metadata["model_override"] = effective_model

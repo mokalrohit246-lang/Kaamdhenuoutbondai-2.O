@@ -27,7 +27,7 @@ except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation, silero
 
-from db import init_db, log_error, get_enabled_tools, update_call_status
+from db import init_db, log_error, get_enabled_tools, update_call_status, get_setting
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -173,25 +173,33 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     campaign_id: Optional[str] = None
     campaign_name: Optional[str] = None
     broker_phone: Optional[str] = None
+    trunk_id_override: Optional[str] = None
 
     if ctx.job.metadata:
         try:
             data = json.loads(ctx.job.metadata)
-            call_id        = data.get("call_id")
-            phone_number   = data.get("phone_number")
-            lead_name      = data.get("lead_name", lead_name)
-            business_name  = data.get("business_name", business_name)
-            service_type   = data.get("service_type", service_type)
-            property_type  = data.get("property_type")
-            budget         = data.get("budget")
-            location       = data.get("location")
-            custom_prompt  = data.get("system_prompt")
-            voice_override = data.get("voice_override")
-            model_override = data.get("model_override")
-            tools_override = data.get("tools_override")
-            campaign_id    = data.get("campaign_id")
-            campaign_name  = data.get("campaign_name")
-            broker_phone   = data.get("broker_phone")
+            call_id             = data.get("call_id")
+            phone_number        = data.get("phone_number")
+            lead_name           = data.get("lead_name", lead_name)
+            business_name       = data.get("business_name", business_name)
+            service_type        = data.get("service_type", service_type)
+            property_type       = data.get("property_type")
+            budget              = data.get("budget")
+            location            = data.get("location")
+            custom_prompt       = data.get("system_prompt")
+            voice_override      = data.get("voice_override")
+            model_override      = data.get("model_override")
+            tools_override      = data.get("tools_override")
+            campaign_id         = data.get("campaign_id")
+            campaign_name       = data.get("campaign_name")
+            broker_phone        = data.get("broker_phone")
+            trunk_id_override   = data.get("outbound_trunk_id")
+            google_key_override = data.get("google_api_key")
+            sip_domain_override = data.get("vobiz_sip_domain")
+            if google_key_override:
+                os.environ["GOOGLE_API_KEY"] = google_key_override
+            if sip_domain_override:
+                os.environ["VOBIZ_SIP_DOMAIN"] = sip_domain_override
         except (json.JSONDecodeError, AttributeError):
             await _log("warning", "Invalid JSON in job metadata")
 
@@ -230,7 +238,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # ── Dial — MUST come before session.start() ──────────────────────────────
     call_start_time = None
     if phone_number:
-        trunk_id = os.getenv("OUTBOUND_TRUNK_ID", "").strip()
+        trunk_id = (
+            (trunk_id_override or "") or
+            os.getenv("OUTBOUND_TRUNK_ID", "").strip() or
+            (await get_setting("OUTBOUND_TRUNK_ID", ""))
+        ).strip()
+
         if not trunk_id:
             err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create SIP Trunk' in Settings."
             await _log("error", err_msg)
