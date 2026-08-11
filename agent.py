@@ -364,13 +364,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
         # Active polling monitor: check if customer hung up
         async def _monitor_active_call():
-            while not _disconnect_event.is_set():
-                await asyncio.sleep(2)
-                if not ctx.room.isconnected():
-                    _disconnect_event.set()
+            # Allow up to 10s for customer to join remote_participants
+            for _ in range(20):
+                if len(ctx.room.remote_participants) > 0 or not ctx.room.isconnected():
                     break
-                if len(ctx.room.remote_participants) == 0:
-                    await _log("info", "Customer left room (0 remote participants remaining)")
+                await asyncio.sleep(0.5)
+
+            while not _disconnect_event.is_set():
+                await asyncio.sleep(1)
+                if not ctx.room.isconnected() or len(ctx.room.remote_participants) == 0:
+                    await _log("info", "Customer disconnected or room closed")
                     _disconnect_event.set()
                     break
 
@@ -382,19 +385,21 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("warning", "Call reached safety timeout — shutting down")
         finally:
             _monitor_task.cancel()
+            final_dur = max(0, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
+            if call_id:
+                try:
+                    await update_call_status(
+                        call_id=call_id,
+                        outcome=tool_ctx.outcome or ("completed" if call_start_time else "failed"),
+                        reason=tool_ctx.end_reason or ("Call completed" if call_start_time else "Call ended before answer"),
+                        duration_seconds=final_dur,
+                        recording_url=tool_ctx.recording_url,
+                        campaign_id=campaign_id,
+                    )
+                    await _log("info", f"Call finalized — id={call_id} outcome={tool_ctx.outcome or 'completed'} duration={final_dur}s")
+                except Exception as _up_err:
+                    await _log("warning", f"Call final status notice: {_up_err}")
 
-        final_dur = max(0, int(time.time() - (call_start_time or time.time())))
-        if call_id:
-            await update_call_status(
-                call_id=call_id,
-                outcome=tool_ctx.outcome or "completed",
-                reason=tool_ctx.end_reason or "Call ended normally",
-                duration_seconds=final_dur,
-                recording_url=tool_ctx.recording_url,
-                campaign_id=campaign_id,
-            )
-
-        await _log("info", f"SIP participant disconnected — ending session for {phone_number} (duration={final_dur}s)")
         try:
             await session.aclose()
         except Exception:
