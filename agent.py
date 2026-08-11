@@ -223,19 +223,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
 
-    if _HAS_ROOM_OPTIONS:
-        from livekit.agents import RoomOptions as _RO
-        _session_kwargs = dict(
-            room=ctx.room,
-            agent=OutboundAssistant(instructions=system_prompt),
-            room_options=_RO(input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony())),
-        )
-    else:
-        _session_kwargs = dict(
-            room=ctx.room,
-            agent=OutboundAssistant(instructions=system_prompt),
-            room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
-        )
+    # Standard clean telephony audio (no heavy CPU neural buffering filter)
+    _session_kwargs = dict(
+        room=ctx.room,
+        agent=OutboundAssistant(instructions=system_prompt),
+    )
 
     await session.start(**_session_kwargs)
     await _log("info", "Agent session active in room")
@@ -260,7 +252,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
         await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
         if call_id:
-            await update_call_status(call_id, outcome="ringing", reason="Dialing customer via SIP")
+            asyncio.create_task(update_call_status(call_id, outcome="ringing", reason="Dialing customer via SIP"))
 
         try:
             await ctx.api.sip.create_sip_participant(
@@ -274,7 +266,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             )
             call_start_time = time.time()
             if call_id:
-                await update_call_status(call_id, outcome="in_progress", reason="Call answered by customer")
+                asyncio.create_task(update_call_status(call_id, outcome="in_progress", reason="Call answered by customer"))
         except Exception as exc:
             err_msg = f"SIP dial failed: {exc}"
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
@@ -283,7 +275,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ctx.shutdown()
             return
 
-        await _log("info", f"Call ANSWERED — {phone_number} picked up, speaking greeting immediately")
+        # ── Instant Direct Greeting (Sub-second audio stream) ────────────────
+        greeting = f"Hi {lead_name}! I am Priya from {business_name}. Am I speaking with {lead_name}?"
+        asyncio.create_task(session.generate_reply(instructions=greeting))
 
         # Set recording URL immediately so it is always present in call log
         _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
@@ -293,13 +287,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
         elif _s3_ep:
             tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
-
-        # ── Fast Direct Greeting ─────────────────────────────────────────────
-        greeting = f"Hi {lead_name}! I am Priya from {business_name}. Am I speaking with {lead_name}?"
-        try:
-            await session.generate_reply(instructions=greeting)
-        except Exception as _gr_exc:
-            await _log("warning", f"Greeting notice: {_gr_exc}")
 
         # Non-blocking background recording
         async def _start_recording_bg():
