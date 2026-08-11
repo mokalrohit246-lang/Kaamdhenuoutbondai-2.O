@@ -36,6 +36,7 @@ from db import (
     save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
     add_campaign_minutes, check_campaign_budget, get_whatsapp_logs,
     insert_initial_call, update_call_status, add_contact_memory,
+    get_wallet, topup_wallet,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -151,6 +152,10 @@ class MinutesRequest(BaseModel):
 
 class StatusRequest(BaseModel):
     status: str
+
+
+class TopupRequest(BaseModel):
+    amount: float
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -295,6 +300,20 @@ async def api_update_notes(call_id: str, req: NotesRequest):
 @app.get("/api/stats")
 async def api_get_stats():
     return await get_stats()
+
+
+# ── Virtual Wallet ───────────────────────────────────────────────────────────
+
+@app.get("/api/wallet")
+async def api_get_wallet():
+    return await get_wallet()
+
+
+@app.post("/api/wallet/topup")
+async def api_topup_wallet(req: TopupRequest):
+    if req.amount <= 0:
+        raise HTTPException(400, "Top-up amount must be greater than 0")
+    return await topup_wallet(req.amount)
 
 
 # ── Appointments ──────────────────────────────────────────────────────────────

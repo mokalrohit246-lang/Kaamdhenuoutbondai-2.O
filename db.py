@@ -33,6 +33,8 @@ DEFAULTS = {
     "TWILIO_WA_SID":           os.getenv("TWILIO_WA_SID", ""),
     "TWILIO_WA_TOKEN":         os.getenv("TWILIO_WA_TOKEN", ""),
     "TWILIO_WA_FROM":          os.getenv("TWILIO_WA_FROM", ""),
+    "WALLET_BALANCE":          os.getenv("WALLET_BALANCE", "0.0"),
+    "LOW_BALANCE_THRESHOLD":   os.getenv("LOW_BALANCE_THRESHOLD", "500.0"),
 }
 
 SENSITIVE_KEYS = {
@@ -85,6 +87,7 @@ async def get_all_settings() -> dict:
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
         "TWILIO_WA_SID", "TWILIO_WA_TOKEN", "TWILIO_WA_FROM",
         "ENABLED_TOOLS",
+        "WALLET_BALANCE", "LOW_BALANCE_THRESHOLD",
     ]
     db_rows = {}
     try:
@@ -137,6 +140,51 @@ async def get_setting(key: str, default: str = "") -> str:
     except Exception:
         pass
     return DEFAULTS.get(key, default)
+
+
+# ── Virtual Wallet Helpers ───────────────────────────────────────────────────
+
+async def get_wallet() -> dict:
+    try:
+        balance_str = await get_setting("WALLET_BALANCE", "0.0")
+        thresh_str = await get_setting("LOW_BALANCE_THRESHOLD", "500.0")
+        balance = float(balance_str or "0.0")
+        threshold = float(thresh_str or "500.0")
+        return {
+            "balance": round(balance, 2),
+            "threshold": round(threshold, 2),
+            "is_low": balance < threshold,
+        }
+    except Exception as exc:
+        logger.warning("Could not get wallet: %s", exc)
+        return {"balance": 0.0, "threshold": 500.0, "is_low": True}
+
+
+async def topup_wallet(amount: float) -> dict:
+    try:
+        current = await get_wallet()
+        new_balance = round(current["balance"] + amount, 2)
+        await save_settings({"WALLET_BALANCE": str(new_balance)})
+        return {
+            "balance": new_balance,
+            "threshold": current["threshold"],
+            "is_low": new_balance < current["threshold"],
+            "added": amount,
+        }
+    except Exception as exc:
+        logger.error("Could not topup wallet: %s", exc)
+        raise exc
+
+
+async def deduct_wallet(cost: float) -> float:
+    try:
+        current = await get_wallet()
+        new_balance = round(max(0.0, current["balance"] - cost), 2)
+        await save_settings({"WALLET_BALANCE": str(new_balance)})
+        return new_balance
+    except Exception as exc:
+        logger.warning("Could not deduct wallet: %s", exc)
+        return 0.0
 
 
 async def set_setting(key: str, value: str) -> None:
@@ -334,7 +382,7 @@ async def update_call_status(
     transcript: Optional[str] = None, notes: Optional[str] = None,
     lead_status: Optional[str] = None, campaign_id: Optional[str] = None,
 ) -> bool:
-    """Update call log with live progress, outcome, duration, and transcript."""
+    """Update call log with live progress, outcome, duration, cost, and transcript."""
     try:
         db = await _adb()
         updates: dict = {"outcome": outcome}
@@ -342,6 +390,10 @@ async def update_call_status(
             updates["reason"] = reason
         if duration_seconds is not None:
             updates["duration_seconds"] = duration_seconds
+            cost = round((duration_seconds / 60.0) * 1.20, 2)
+            updates["call_cost"] = cost
+            if cost > 0:
+                await deduct_wallet(cost)
         if recording_url is not None:
             updates["recording_url"] = recording_url
         if transcript is not None:
@@ -373,9 +425,11 @@ async def log_call(
     try:
         db = await _adb()
         cid = call_id or str(uuid.uuid4())
+        cost = round((duration_seconds / 60.0) * 1.20, 2)
         row: dict = {
             "id": cid, "phone_number": phone_number, "lead_name": lead_name,
             "outcome": outcome, "reason": reason, "duration_seconds": duration_seconds,
+            "call_cost": cost,
             "timestamp": datetime.now().isoformat(),
         }
         if recording_url:
@@ -395,6 +449,8 @@ async def log_call(
         if transcript:
             row["transcript"] = transcript
         await db.table("call_logs").upsert(row, on_conflict="id").execute()
+        if cost > 0:
+            await deduct_wallet(cost)
         if campaign_id and duration_seconds > 0:
             call_minutes = max(1, round(duration_seconds / 60))
             await increment_consumed_minutes(campaign_id, call_minutes)

@@ -372,11 +372,54 @@ tr:last-child td { border-bottom: none; }
   border-top: 1px solid var(--border);
 }
 .crm-drilldown.open { display: block; }
+
+/* Sticky Low Balance Banner */
+.sticky-banner {
+  position: sticky;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: linear-gradient(90deg, rgba(255, 77, 77, 0.95), rgba(180, 20, 20, 0.95));
+  backdrop-filter: blur(12px);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 25px rgba(255, 77, 77, 0.5);
+  padding: 0.75rem 1.5rem;
+  color: #fff;
+  animation: banner-pulse 2.5s infinite ease-in-out;
+}
+@keyframes banner-pulse {
+  0%, 100% { box-shadow: 0 4px 25px rgba(255, 77, 77, 0.5); }
+  50% { box-shadow: 0 4px 35px rgba(255, 77, 77, 0.85); }
+}
+.banner-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  max-width: 1400px;
+  margin: 0 auto;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.btn-xs {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: var(--r);
+}
 </style>
 </head>
 <body>
 
-<header>
+<!-- ⚠️ Global Sticky Low Balance Alert Banner -->
+<div id="banner-low-balance" class="sticky-banner" style="display:none;">
+  <div class="banner-content">
+    <span>⚠️ <strong>CRITICAL:</strong> Low API Balance (<span id="banner-bal-val">₹0.00</span>). Calls may fail soon. Please Top-Up!</span>
+    <button class="btn btn-xs btn-primary" onclick="switchTab('tab-costs'); window.scrollTo({top:0, behavior:'smooth'});" style="background:var(--accent); color:#000; font-weight:700;">
+      ⚡ Recharge Wallet
+    </button>
+  </div>
+</div>
   <div class="header-top">
     <div class="logo">
       <div class="pulse-dot"></div>
@@ -782,7 +825,7 @@ tr:last-child td { border-bottom: none; }
       <div class="table-wrapper">
         <table>
           <thead>
-            <tr><th>Timestamp</th><th>Phone</th><th>Lead Name</th><th>Duration</th><th>Outcome</th><th>Notes</th><th>Recording</th></tr>
+            <tr><th>Timestamp</th><th>Phone</th><th>Lead Name</th><th>Duration</th><th>Cost</th><th>Outcome</th><th>Notes</th><th>Recording</th></tr>
           </thead>
           <tbody id="tb-calls"></tbody>
         </table>
@@ -983,10 +1026,62 @@ tr:last-child td { border-bottom: none; }
 
   <!-- 💰 API Costs Tab -->
   <section id="tab-costs" class="tab-panel">
+    <!-- 💳 Real-Time Virtual Wallet Card -->
+    <div class="card" style="border: 1px solid var(--accent2); box-shadow: 0 0 35px rgba(0, 240, 255, 0.2); margin-bottom: 2rem; background: linear-gradient(135deg, rgba(22, 22, 22, 0.95), rgba(10, 25, 35, 0.9));">
+      <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+        <div>
+          <h3 style="margin:0; display:flex; align-items:center; gap:0.5rem;">
+            💳 Virtual Wallet & Live Balance
+            <span id="wallet-status-badge" class="badge" style="background:rgba(0,255,136,0.15); color:var(--accent); border:1px solid rgba(0,255,136,0.3);">HEALTHY</span>
+          </h3>
+          <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:var(--text2);">Real-time call cost deduction (₹1.20 / min) across Vobiz SIP, LiveKit Cloud, and Gemini Multimodal</p>
+        </div>
+        <div class="text-right">
+          <div style="font-size:0.8rem; color:var(--text2); text-transform:uppercase; letter-spacing:0.05em;">Threshold Alert Level</div>
+          <div style="font-size:0.95rem; color:var(--warn); font-family:var(--mono);">₹<span id="wallet-thresh-val">500.00</span></div>
+        </div>
+      </div>
+
+      <div class="grid grid-2" style="align-items: center;">
+        <!-- Left: Live Balance Tech Display -->
+        <div style="padding: 1.5rem; background: rgba(0,0,0,0.4); border-radius: var(--r); border: 1px solid rgba(255,255,255,0.05); text-align: center;">
+          <div style="font-size: 0.85rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.1em;">Current Live Balance</div>
+          <div id="wallet-live-balance" style="font-size: 3.2rem; font-weight: 800; font-family: var(--mono); color: var(--accent); text-shadow: 0 0 20px rgba(212,175,55,0.5); margin: 0.5rem 0;">
+            ₹0.00
+          </div>
+          <div style="font-size: 0.8rem; color: var(--text2);">Auto-deducted per completed call · Auto-refreshes every 15s</div>
+        </div>
+
+        <!-- Right: Top-Up Controls & External Links -->
+        <div style="padding: 1rem 1.5rem;">
+          <label style="font-size:0.9rem; font-weight:600; color:var(--text); margin-bottom:0.5rem; display:block;">Add Funds to Virtual Wallet (₹)</label>
+          <div class="flex gap-2 mb-3">
+            <input type="number" id="wallet-topup-amt" placeholder="Enter amount e.g. 500" min="10" step="10" value="500" style="flex:1; font-size:1.1rem; font-family:var(--mono);">
+            <button class="btn btn-primary" id="btn-topup" onclick="topupWallet()" style="min-width:140px; font-weight:700; background:linear-gradient(135deg,#D4AF37,#ffcc00); color:#000;">
+              ⚡ Add Funds
+            </button>
+          </div>
+          
+          <div style="font-size: 0.8rem; color: var(--text2); margin-bottom: 0.75rem;">Direct Provider Consoles:</div>
+          <div class="flex gap-2 flex-wrap">
+            <a href="https://aistudio.google.com/" target="_blank" class="btn btn-xs" style="background:rgba(255,255,255,0.06); border:1px solid var(--border); color:var(--accent2); text-decoration:none;">
+              ↗ Recharge Gemini
+            </a>
+            <a href="https://cloud.livekit.io/" target="_blank" class="btn btn-xs" style="background:rgba(255,255,255,0.06); border:1px solid var(--border); color:var(--accent); text-decoration:none;">
+              ↗ Recharge LiveKit
+            </a>
+            <a href="#" onclick="toast('Vobiz SIP console link', 'info'); return false;" class="btn btn-xs" style="background:rgba(255,255,255,0.06); border:1px solid var(--border); color:#fff; text-decoration:none;">
+              ↗ Recharge Vobiz
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Hero Cost Card -->
-    <div class="card" style="text-align:center; padding:3rem; border:1px solid var(--accent); box-shadow:0 0 30px rgba(212,175,55,0.4),0 0 60px rgba(212,175,55,0.1); margin-bottom:2rem;">
-      <div style="font-size:1.1rem; color:var(--text2); text-transform:uppercase; letter-spacing:0.1em; font-family:var(--sans);">Total Voice Cost</div>
-      <div style="font-size:4rem; font-weight:700; background:linear-gradient(180deg,var(--accent),#fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin:0.5rem 0; font-family:var(--sans);">₹1.20 / Minute</div>
+    <div class="card" style="text-align:center; padding:2rem; border:1px solid var(--accent); box-shadow:0 0 30px rgba(212,175,55,0.3); margin-bottom:2rem;">
+      <div style="font-size:1rem; color:var(--text2); text-transform:uppercase; letter-spacing:0.1em; font-family:var(--sans);">Standard Voice Cost</div>
+      <div style="font-size:3.2rem; font-weight:700; background:linear-gradient(180deg,var(--accent),#fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin:0.3rem 0; font-family:var(--sans);">₹1.20 / Minute</div>
       <div style="color:var(--text2); font-size:0.9rem;">$0.014 USD · Sub-300ms latency · Production-grade quality</div>
     </div>
 
@@ -1523,12 +1618,17 @@ window.changeCallPage = (dir) => {
 async function loadCalls() {
   const data = await api(`/api/calls?page=${callPage}&limit=20`);
   const calls = Array.isArray(data) ? data : [];
-  $('tb-calls').innerHTML = calls.map(c => `
+  $('tb-calls').innerHTML = calls.map(c => {
+    const costVal = c.call_cost !== undefined && c.call_cost !== null 
+      ? Number(c.call_cost) 
+      : (c.duration_seconds ? (c.duration_seconds / 60) * 1.20 : 0);
+    return `
     <tr>
       <td class="text-muted text-mono" style="font-size:0.8rem">${(c.timestamp||'').slice(0,16)}</td>
       <td>${c.phone_number||''}</td>
       <td>${c.lead_name||'-'}</td>
       <td>${c.duration_seconds||0}s</td>
+      <td style="color:var(--accent); font-family:var(--mono);">₹${costVal.toFixed(2)}</td>
       <td>${getBadgeHtml(c.outcome)}</td>
       <td>
         <div class="flex items-center gap-2">
@@ -1538,7 +1638,7 @@ async function loadCalls() {
       </td>
       <td>${c.recording_url ? `<a href="${c.recording_url}" target="_blank" style="color:var(--accent2)">Audio 🎵</a>` : '-'}</td>
     </tr>
-  `).join('') || '<tr><td colspan="7" class="text-muted">No calls on this page</td></tr>';
+  `}).join('') || '<tr><td colspan="8" class="text-muted">No calls on this page</td></tr>';
 }
 window.saveNotes = async (id) => {
   await apiPatch(`/api/calls/${id}/notes`, { notes: $(`note-${id}`).value });
@@ -1771,6 +1871,77 @@ function getMockData(path, method) {
   return {};
 }
 
+// Virtual Wallet & Balance Management
+let walletBalance = 0.0;
+let walletThreshold = 500.0;
+
+async function checkWalletBalance() {
+  try {
+    const data = await api('/api/wallet');
+    if (!data || typeof data !== 'object') return;
+    walletBalance = Number(data.balance || 0);
+    walletThreshold = Number(data.threshold || 500);
+
+    // Update Live Balance Tech Displays
+    if ($('wallet-live-balance')) {
+      $('wallet-live-balance').innerText = `₹${walletBalance.toFixed(2)}`;
+      $('wallet-live-balance').style.color = data.is_low ? 'var(--danger)' : 'var(--accent)';
+    }
+    if ($('wallet-thresh-val')) $('wallet-thresh-val').innerText = walletThreshold.toFixed(2);
+    if ($('banner-bal-val')) $('banner-bal-val').innerText = `₹${walletBalance.toFixed(2)}`;
+    
+    // Status Badge
+    if ($('wallet-status-badge')) {
+      if (data.is_low) {
+        $('wallet-status-badge').innerText = 'LOW BALANCE';
+        $('wallet-status-badge').style.background = 'rgba(255,77,77,0.2)';
+        $('wallet-status-badge').style.color = 'var(--danger)';
+        $('wallet-status-badge').style.border = '1px solid rgba(255,77,77,0.4)';
+      } else {
+        $('wallet-status-badge').innerText = 'HEALTHY';
+        $('wallet-status-badge').style.background = 'rgba(0,255,136,0.15)';
+        $('wallet-status-badge').style.color = 'var(--accent)';
+        $('wallet-status-badge').style.border = '1px solid rgba(0,255,136,0.3)';
+      }
+    }
+
+    // Global Sticky Alert Banner
+    const banner = $('banner-low-balance');
+    if (banner) {
+      banner.style.display = data.is_low ? 'block' : 'none';
+    }
+  } catch (err) {
+    console.warn("Wallet check error:", err);
+  }
+}
+
+window.topupWallet = async () => {
+  const input = $('wallet-topup-amt');
+  const btn = $('btn-topup');
+  const amt = parseFloat(input?.value);
+  if (!amt || isNaN(amt) || amt <= 0) {
+    toast('Please enter a valid amount (₹)', 'err');
+    return;
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Recharging...';
+  }
+  try {
+    const res = await apiPost('/api/wallet/topup', { amount: amt });
+    toast(`Successfully added ₹${amt} to Virtual Wallet!`, 'ok');
+    if (input) input.value = '500';
+    await checkWalletBalance();
+  } catch (e) {
+    toast('Top-up failed: ' + (e.message || e), 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '⚡ Add Funds';
+    }
+  }
+};
+
 // Init
 function init() {
   switchTab('tab-stats');
@@ -1779,7 +1950,9 @@ function init() {
   loadAppointments();
   loadLogs();
   loadAgentProfiles();
+  checkWalletBalance();
   setInterval(loadStats, 10000);
+  setInterval(checkWalletBalance, 15000);
   scheduleLogsRefresh();
 }
 document.addEventListener('DOMContentLoaded', init);

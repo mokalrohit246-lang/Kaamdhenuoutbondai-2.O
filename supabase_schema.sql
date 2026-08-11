@@ -20,7 +20,7 @@ ALTER TABLE appointments ADD COLUMN IF NOT EXISTS calcom_booking_uid TEXT;
 CREATE INDEX IF NOT EXISTS idx_appointments_phone ON appointments (phone);
 CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments (date);
 
--- 2. Call Logs Table
+-- 2. Call Logs Table (With Real Estate, Lifecycle, & Cost Columns)
 CREATE TABLE IF NOT EXISTS call_logs (
     id TEXT PRIMARY KEY,
     phone_number TEXT NOT NULL,
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS call_logs (
     outcome TEXT DEFAULT 'initiated',
     reason TEXT,
     duration_seconds INTEGER DEFAULT 0,
+    call_cost REAL DEFAULT 0.0,
     recording_url TEXT,
     notes TEXT,
     lead_status TEXT,
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS call_logs (
     timestamp TEXT NOT NULL
 );
 ALTER TABLE call_logs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS call_cost REAL DEFAULT 0.0;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS recording_url TEXT;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS lead_status TEXT;
@@ -51,13 +53,18 @@ CREATE INDEX IF NOT EXISTS idx_call_logs_phone ON call_logs (phone_number);
 CREATE INDEX IF NOT EXISTS idx_call_logs_timestamp ON call_logs (timestamp);
 CREATE INDEX IF NOT EXISTS idx_call_logs_campaign ON call_logs (campaign_id);
 
--- 3. Settings Key-Value Store
+-- 3. Settings Key-Value Store (With Virtual Wallet Defaults)
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 ALTER TABLE settings DISABLE ROW LEVEL SECURITY;
+INSERT INTO settings (key, value, updated_at)
+VALUES 
+    ('WALLET_BALANCE', '0.0', NOW()::TEXT),
+    ('LOW_BALANCE_THRESHOLD', '500.0', NOW()::TEXT)
+ON CONFLICT (key) DO NOTHING;
 
 -- 4. Error & System Logs Table
 CREATE TABLE IF NOT EXISTS error_logs (
