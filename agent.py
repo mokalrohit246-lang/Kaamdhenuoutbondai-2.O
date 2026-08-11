@@ -114,34 +114,14 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
-        try:
-            from google.genai import types as _gt
-            _realtime_input_cfg = _gt.RealtimeInputConfig(
-                automatic_activity_detection=_gt.AutomaticActivityDetection(
-                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=250,
-                    prefix_padding_ms=80,
-                ),
-            )
-            _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
-            _ctx_compression_cfg = _gt.ContextWindowCompressionConfig(
-                trigger_tokens=25600,
-                sliding_window=_gt.SlidingWindow(target_tokens=12800),
-            )
-            logger.info("Ultra-fast voice turn-taking applied (250ms silence detection, high sensitivity)")
-        except Exception as _cfg_err:
-            logger.warning("Could not build silence-prevention config: %s", _cfg_err)
-            _realtime_input_cfg = None
-            _session_resumption_cfg = None
-            _ctx_compression_cfg = None
-
-        realtime_kwargs: dict = dict(model=gemini_model, voice=gemini_voice, instructions=system_prompt)
-        if _realtime_input_cfg is not None:
-            realtime_kwargs["realtime_input_config"]      = _realtime_input_cfg
-            realtime_kwargs["session_resumption"]         = _session_resumption_cfg
-            realtime_kwargs["context_window_compression"] = _ctx_compression_cfg
-
-        return AgentSession(llm=RealtimeClass(**realtime_kwargs), tools=tools)
+        return AgentSession(
+            llm=RealtimeClass(
+                model=gemini_model,
+                voice=gemini_voice,
+                instructions=system_prompt,
+            ),
+            tools=tools,
+        )
 
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
@@ -237,9 +217,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await ctx.connect()
     await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
 
-    # ── Build AI Session ─────────────────────────────────────────────────────
+    # ── Build and start AI session ───────────────────────────────────────────
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
-    await _log("info", f"Building AI session — model={gemini_model}")
+    await _log("info", f"Starting AI session — model={gemini_model}")
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
 
@@ -256,6 +236,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             agent=OutboundAssistant(instructions=system_prompt),
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         )
+
+    await session.start(**_session_kwargs)
+    await _log("info", "Agent session active in room")
 
     # ── Dial SIP Participant ─────────────────────────────────────────────────
     call_start_time = None
@@ -300,14 +283,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ctx.shutdown()
             return
 
-        await _log("info", f"Call ANSWERED — {phone_number} picked up, starting voice stream now")
+        await _log("info", f"Call ANSWERED — {phone_number} picked up, speaking greeting immediately")
 
-        # ── Start Session with Clean Audio Buffer & Stream Greeting ──────────
-        await session.start(**_session_kwargs)
-
-        # Trigger instant non-blocking greeting (streams in < 500ms)
-        greeting = f"Say immediately in warm Indian voice: 'Hello {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?'"
-        asyncio.create_task(session.generate_reply(instructions=greeting))
+        # ── Fast Direct Greeting ─────────────────────────────────────────────
+        greeting = f"Hi {lead_name}! I am Priya from {business_name}. Am I speaking with {lead_name}?"
+        try:
+            await session.generate_reply(instructions=greeting)
+        except Exception as _gr_exc:
+            await _log("warning", f"Greeting notice: {_gr_exc}")
 
         # Non-blocking background recording
         async def _start_recording_bg():
