@@ -142,3 +142,8 @@ ALTER TABLE whatsapp_logs DISABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_timestamp ON whatsapp_logs (timestamp);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_lead ON whatsapp_logs (lead_phone);
 
+-- 9. Storage Bucket for Call Audio Recordings
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('call-recordings', 'call-recordings', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+

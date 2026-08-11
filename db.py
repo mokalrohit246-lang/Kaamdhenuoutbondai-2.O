@@ -69,6 +69,18 @@ def init_db() -> None:
         db = _sdb()
         db.table("settings").select("key").limit(1).execute()
         logger.info("Supabase connected successfully")
+
+        # Auto-create call-recordings public bucket if not present
+        try:
+            bucket_name = os.getenv("S3_BUCKET", "call-recordings") or "call-recordings"
+            buckets = db.storage.list_buckets()
+            existing_names = [b.name for b in buckets] if buckets else []
+            if bucket_name not in existing_names:
+                db.storage.create_bucket(bucket_name, options={"public": True})
+                logger.info("Auto-created Supabase storage bucket '%s' with public access", bucket_name)
+        except Exception as b_exc:
+            logger.warning("Storage bucket auto-init notice: %s", b_exc)
+
     except Exception as exc:
         logger.warning("Supabase connection warning: %s", exc)
         logger.warning("Run supabase_schema.sql in your Supabase Dashboard -> SQL Editor")
