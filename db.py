@@ -475,27 +475,7 @@ async def get_all_calls(page: int = 1, limit: int = 20) -> list:
         db = await _adb()
         offset = (page - 1) * limit
         result = await db.table("call_logs").select("*").order("timestamp", desc=True).range(offset, offset + limit - 1).execute()
-        calls = result.data or []
-
-        # Auto-heal stale in_progress / ringing calls older than 3 minutes
-        now = datetime.now()
-        for c in calls:
-            if c.get("outcome") in ("in_progress", "ringing", "initiated"):
-                ts_str = c.get("timestamp") or ""
-                try:
-                    ts = datetime.fromisoformat(ts_str)
-                    age_seconds = (now - ts).total_seconds()
-                    if age_seconds > 180:
-                        c["outcome"] = "completed" if (c.get("duration_seconds") or 0) > 0 else "no_answer"
-                        c["reason"] = c.get("reason") or "Call ended"
-                        asyncio.create_task(db.table("call_logs").update({
-                            "outcome": c["outcome"],
-                            "reason": c["reason"]
-                        }).eq("id", c["id"]).execute())
-                except Exception:
-                    pass
-
-        return calls
+        return result.data or []
     except Exception as exc:
         logger.warning("Could not get calls: %s", exc)
         return []
