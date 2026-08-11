@@ -119,8 +119,8 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
                     end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=450,
-                    prefix_padding_ms=100,
+                    silence_duration_ms=250,
+                    prefix_padding_ms=80,
                 ),
             )
             _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
@@ -128,7 +128,7 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 trigger_tokens=25600,
                 sliding_window=_gt.SlidingWindow(target_tokens=12800),
             )
-            logger.info("Ultra-fast voice turn-taking applied (450ms silence detection, high sensitivity)")
+            logger.info("Ultra-fast voice turn-taking applied (250ms silence detection, high sensitivity)")
         except Exception as _cfg_err:
             logger.warning("Could not build silence-prevention config: %s", _cfg_err)
             _realtime_input_cfg = None
@@ -237,11 +237,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await ctx.connect()
     await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
 
-    # ── Pre-warm and start Gemini Live Session BEFORE dialing ────────────────
+    # ── Build AI Session ─────────────────────────────────────────────────────
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
-    await _log("info", f"Pre-warming AI session — model={gemini_model}")
+    await _log("info", f"Building AI session — model={gemini_model}")
     active_tools = tool_ctx.build_tool_list(enabled_tools)
-    await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
 
     if _HAS_ROOM_OPTIONS:
@@ -257,43 +256,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             agent=OutboundAssistant(instructions=system_prompt),
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         )
-
-    await session.start(**_session_kwargs)
-    await _log("info", "Agent session warm & ready in room")
-
-    # ── Non-blocking Egress Recording (Background Task) ──────────────────────
-    if phone_number:
-        async def _start_recording_bg():
-            _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
-            _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
-            _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "")
-            _s3_endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")
-            _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
-            if _aws_key and _aws_secret and _aws_bucket:
-                try:
-                    _recording_path = f"recordings/{ctx.room.name}.ogg"
-                    _egress_req = api.RoomCompositeEgressRequest(
-                        room_name=ctx.room.name, audio_only=True,
-                        file_outputs=[api.EncodedFileOutput(
-                            file_type=api.EncodedFileType.OGG, filepath=_recording_path,
-                            s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
-                                            bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint),
-                        )],
-                    )
-                    _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
-                    _s3_ep = _s3_endpoint.rstrip("/")
-                    if "supabase.co/storage/v1/s3" in _s3_ep:
-                        _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
-                        tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/{_recording_path}"
-                    elif _s3_ep:
-                        tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
-                    else:
-                        tool_ctx.recording_url = f"https://{_aws_bucket}.s3.amazonaws.com/{_recording_path}"
-                    await _log("info", f"Recording started: egress={_egress.egress_id}")
-                except Exception as _exc:
-                    await _log("warning", f"Recording start notice: {_exc}")
-
-        asyncio.create_task(_start_recording_bg())
 
     # ── Dial SIP Participant ─────────────────────────────────────────────────
     call_start_time = None
@@ -337,17 +299,50 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 await update_call_status(call_id, outcome="failed", reason=err_msg)
             ctx.shutdown()
             return
-        await _log("info", f"Call ANSWERED — {phone_number} picked up, triggering instant greeting")
 
-        # ── Instant Greeting (Trigger immediately upon answer) ───────────────
-        greeting = (
-            f"The customer {lead_name} just answered the phone. Speak immediately in natural Indian voice now: "
-            f"'Hello {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?'"
-        )
-        try:
-            await session.generate_reply(instructions=greeting)
-        except Exception as _gr_exc:
-            await _log("info", f"Session ready & listening for customer speech: {_gr_exc}")
+        await _log("info", f"Call ANSWERED — {phone_number} picked up, starting voice stream now")
+
+        # ── Start Session with Clean Audio Buffer & Stream Greeting ──────────
+        await session.start(**_session_kwargs)
+
+        # Trigger instant non-blocking greeting (streams in < 500ms)
+        greeting = f"Say immediately in warm Indian voice: 'Hello {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?'"
+        asyncio.create_task(session.generate_reply(instructions=greeting))
+
+        # Non-blocking background recording
+        async def _start_recording_bg():
+            _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
+            _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
+            _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "")
+            _s3_endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")
+            _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
+            if _aws_key and _aws_secret and _aws_bucket:
+                try:
+                    _recording_path = f"recordings/{ctx.room.name}.ogg"
+                    _egress_req = api.RoomCompositeEgressRequest(
+                        room_name=ctx.room.name, audio_only=True,
+                        file_outputs=[api.EncodedFileOutput(
+                            file_type=api.EncodedFileType.OGG, filepath=_recording_path,
+                            s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
+                                            bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint),
+                        )],
+                    )
+                    _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
+                    _s3_ep = _s3_endpoint.rstrip("/")
+                    if "supabase.co/storage/v1/s3" in _s3_ep:
+                        _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
+                        tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/{_recording_path}"
+                    elif _s3_ep:
+                        tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
+                    else:
+                        tool_ctx.recording_url = f"https://{_aws_bucket}.s3.amazonaws.com/{_recording_path}"
+                    await _log("info", f"Recording started: egress={_egress.egress_id}")
+                except Exception as _exc:
+                    await _log("warning", f"Recording start notice: {_exc}")
+
+        asyncio.create_task(_start_recording_bg())
+    else:
+        await session.start(**_session_kwargs)
 
     # ── Keep session alive until SIP participant actually leaves ─────────────
     if phone_number:
