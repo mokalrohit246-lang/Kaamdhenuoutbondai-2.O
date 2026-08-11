@@ -325,9 +325,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 )
                 _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
                 _s3_ep = _s3_endpoint.rstrip("/")
-                tool_ctx.recording_url = (f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
-                                           if _s3_ep else f"s3://{_aws_bucket}/{_recording_path}")
-                await _log("info", f"Recording started: egress={_egress.egress_id}")
+                if "supabase.co/storage/v1/s3" in _s3_ep:
+                    _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
+                    tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/{_recording_path}"
+                elif _s3_ep:
+                    tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
+                else:
+                    tool_ctx.recording_url = f"https://{_aws_bucket}.s3.amazonaws.com/{_recording_path}"
+                await _log("info", f"Recording started: egress={_egress.egress_id} url={tool_ctx.recording_url}")
             except Exception as _exc:
                 await _log("warning", f"Recording start failed (non-fatal): {_exc}")
 

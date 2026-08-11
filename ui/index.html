@@ -1622,6 +1622,10 @@ async function loadCalls() {
     const costVal = c.call_cost !== undefined && c.call_cost !== null 
       ? Number(c.call_cost) 
       : (c.duration_seconds ? (c.duration_seconds / 60) * 1.20 : 0);
+    let recUrl = c.recording_url || '';
+    if (recUrl && recUrl.includes('/storage/v1/s3/')) {
+      recUrl = recUrl.replace('/storage/v1/s3/', '/storage/v1/object/public/');
+    }
     return `
     <tr>
       <td class="text-muted text-mono" style="font-size:0.8rem">${(c.timestamp||'').slice(0,16)}</td>
@@ -1636,7 +1640,7 @@ async function loadCalls() {
           <button class="btn btn-sm" onclick="saveNotes('${c.id}')">💾</button>
         </div>
       </td>
-      <td>${c.recording_url ? `<a href="${c.recording_url}" target="_blank" style="color:var(--accent2)">Audio 🎵</a>` : '-'}</td>
+      <td>${recUrl ? `<a href="${recUrl}" target="_blank" style="color:var(--accent2); text-decoration:underline;">Audio 🎵</a>` : '-'}</td>
     </tr>
   `}).join('') || '<tr><td colspan="8" class="text-muted">No calls on this page</td></tr>';
 }
