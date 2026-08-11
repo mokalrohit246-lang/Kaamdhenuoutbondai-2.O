@@ -272,13 +272,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
             if call_id:
                 await update_call_status(call_id, outcome="failed", reason=err_msg)
-            ctx.shutdown()
-            return
-
-        # ── Instant Direct Greeting (Sub-second audio stream) ────────────────
-        greeting = f"Hi {lead_name}! I am Priya from {business_name}. Am I speaking with {lead_name}?"
-        asyncio.create_task(session.generate_reply(instructions=greeting))
-
         # Set recording URL immediately so it is always present in call log
         _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
         _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
@@ -287,6 +280,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
         elif _s3_ep:
             tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+
+        # ── Fast Direct Greeting ─────────────────────────────────────────────
+        greeting = f"Hi {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?"
+        try:
+            await session.generate_reply(instructions=greeting)
+            await _log("info", f"Greeting spoken to {phone_number}")
+        except Exception as _gr_exc:
+            await _log("warning", f"Greeting notice: {_gr_exc}")
 
         # Non-blocking background recording
         async def _start_recording_bg():
