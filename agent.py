@@ -348,22 +348,37 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     # ── Keep session alive until SIP participant actually leaves ─────────────
     if phone_number:
-        _sip_identity = f"sip_{phone_number}"
         _disconnect_event = asyncio.Event()
 
         def _on_participant_disconnected(participant: rtc.RemoteParticipant):
-            if participant.identity == _sip_identity:
-                _disconnect_event.set()
+            _disconnect_event.set()
+
         def _on_disconnected():
             _disconnect_event.set()
 
         ctx.room.on("participant_disconnected", _on_participant_disconnected)
         ctx.room.on("disconnected", _on_disconnected)
 
+        # Active polling monitor: check if customer hung up
+        async def _monitor_active_call():
+            while not _disconnect_event.is_set():
+                await asyncio.sleep(2)
+                if not ctx.room.isconnected():
+                    _disconnect_event.set()
+                    break
+                if len(ctx.room.remote_participants) == 0:
+                    await _log("info", "Customer left room (0 remote participants remaining)")
+                    _disconnect_event.set()
+                    break
+
+        _monitor_task = asyncio.create_task(_monitor_active_call())
+
         try:
             await asyncio.wait_for(_disconnect_event.wait(), timeout=3600)
         except asyncio.TimeoutError:
-            await _log("warning", "Call reached 1-hour safety timeout — shutting down")
+            await _log("warning", "Call reached safety timeout — shutting down")
+        finally:
+            _monitor_task.cancel()
 
         final_dur = max(0, int(time.time() - (call_start_time or time.time())))
         if call_id:
@@ -377,7 +392,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             )
 
         await _log("info", f"SIP participant disconnected — ending session for {phone_number} (duration={final_dur}s)")
-        await session.aclose()
+        try:
+            await session.aclose()
+        except Exception:
+            pass
     else:
         _done = asyncio.Event()
         ctx.room.on("disconnected", lambda: _done.set())
