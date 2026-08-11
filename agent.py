@@ -285,6 +285,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
         await _log("info", f"Call ANSWERED — {phone_number} picked up, speaking greeting immediately")
 
+        # Set recording URL immediately so it is always present in call log
+        _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
+        _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
+        if "supabase.co/storage/v1/s3" in _s3_ep:
+            _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
+            tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+        elif _s3_ep:
+            tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+
         # ── Fast Direct Greeting ─────────────────────────────────────────────
         greeting = f"Hi {lead_name}! I am Priya from {business_name}. Am I speaking with {lead_name}?"
         try:
@@ -296,8 +305,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         async def _start_recording_bg():
             _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
             _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
-            _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "")
-            _s3_endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")
             _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
             if _aws_key and _aws_secret and _aws_bucket:
                 try:
@@ -307,19 +314,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         file_outputs=[api.EncodedFileOutput(
                             file_type=api.EncodedFileType.OGG, filepath=_recording_path,
                             s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
-                                            bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint),
+                                            bucket=_aws_bucket, region=_s3_region, endpoint=_s3_ep),
                         )],
                     )
                     _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
-                    _s3_ep = _s3_endpoint.rstrip("/")
-                    if "supabase.co/storage/v1/s3" in _s3_ep:
-                        _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
-                        tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/{_recording_path}"
-                    elif _s3_ep:
-                        tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
-                    else:
-                        tool_ctx.recording_url = f"https://{_aws_bucket}.s3.amazonaws.com/{_recording_path}"
-                    await _log("info", f"Recording started: egress={_egress.egress_id}")
+                    await _log("info", f"Recording egress started: {_egress.egress_id}")
                 except Exception as _exc:
                     await _log("warning", f"Recording start notice: {_exc}")
 
@@ -331,20 +330,39 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     if phone_number:
         _disconnect_event = asyncio.Event()
 
-        def _on_p_disc(participant: rtc.RemoteParticipant):
+        def _signal_disconnect(reason=""):
+            logger.info("Call disconnect triggered: %s", reason)
             _disconnect_event.set()
 
-        def _on_room_disc():
-            _disconnect_event.set()
+        ctx.room.on("participant_disconnected", lambda p: _signal_disconnect(f"participant {p.identity} left"))
+        ctx.room.on("disconnected", lambda: _signal_disconnect("room closed"))
 
-        ctx.room.on("participant_disconnected", _on_p_disc)
-        ctx.room.on("disconnected", _on_room_disc)
+        # Monitor active call: once participant joins, detect when they leave
+        async def _hangup_watcher():
+            has_seen_participant = False
+            for _ in range(60):
+                if len(ctx.room.remote_participants) > 0:
+                    has_seen_participant = True
+                    break
+                await asyncio.sleep(0.5)
+
+            while not _disconnect_event.is_set():
+                await asyncio.sleep(2.0)
+                if not ctx.room.isconnected():
+                    _signal_disconnect("room isconnected=False")
+                    break
+                if has_seen_participant and len(ctx.room.remote_participants) == 0:
+                    _signal_disconnect("customer hung up (0 remote participants remaining)")
+                    break
+
+        _watcher_task = asyncio.create_task(_hangup_watcher())
 
         try:
             await asyncio.wait_for(_disconnect_event.wait(), timeout=3600)
         except asyncio.TimeoutError:
             await _log("warning", "Call reached 1-hour safety timeout — shutting down")
         finally:
+            _watcher_task.cancel()
             final_dur = max(1, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
             if call_id:
                 try:
@@ -356,9 +374,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         recording_url=tool_ctx.recording_url,
                         campaign_id=campaign_id,
                     )
-                    await _log("info", f"Call finalized in DB — id={call_id} outcome={tool_ctx.outcome or 'completed'} duration={final_dur}s")
+                    await _log("info", f"Call finalized in DB — id={call_id} outcome={tool_ctx.outcome or 'completed'} duration={final_dur}s recording_url={tool_ctx.recording_url}")
                 except Exception as _up_err:
-                    await _log("warning", f"Call final status notice: {_up_err}")
+                    await _log("error", f"Call final status notice: {_up_err}")
 
         try:
             await session.aclose()

@@ -53,10 +53,19 @@ def _sdb():
 
 
 async def _adb():
-    from supabase._async.client import create_client
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
-    return await create_client(url, key)
+    try:
+        try:
+            from supabase import acreate_client
+            url = os.getenv("SUPABASE_URL", "").strip()
+            key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+            return await acreate_client(url, key)
+        except (ImportError, AttributeError):
+            from supabase._async.client import create_client
+            url = os.getenv("SUPABASE_URL", "").strip()
+            key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+            return await create_client(url, key)
+    except Exception:
+        return _sdb()
 
 
 def init_db() -> None:
@@ -405,7 +414,10 @@ async def update_call_status(
             cost = round((duration_seconds / 60.0) * 1.20, 2)
             updates["call_cost"] = cost
             if cost > 0:
-                await deduct_wallet(cost)
+                try:
+                    await deduct_wallet(cost)
+                except Exception as _w_err:
+                    logger.warning("Wallet deduction notice: %s", _w_err)
         if recording_url is not None:
             updates["recording_url"] = recording_url
         if transcript is not None:
@@ -414,7 +426,13 @@ async def update_call_status(
             updates["notes"] = notes
         if lead_status is not None:
             updates["lead_status"] = lead_status
-        await db.table("call_logs").update(updates).eq("id", call_id).execute()
+
+        q = db.table("call_logs").update(updates).eq("id", call_id)
+        res = q.execute()
+        if asyncio.iscoroutine(res):
+            await res
+
+        logger.info("Call updated in DB: id=%s outcome=%s dur=%ss cost=%s", call_id, outcome, duration_seconds, updates.get("call_cost"))
 
         # If campaign call completed with duration, update campaign minute cap
         if campaign_id and duration_seconds and duration_seconds > 0:
@@ -422,7 +440,7 @@ async def update_call_status(
             await increment_consumed_minutes(campaign_id, call_minutes)
         return True
     except Exception as exc:
-        logger.warning("Could not update call status for %s: %s", call_id, exc)
+        logger.error("Could not update call status for %s: %s", call_id, exc)
         return False
 
 
