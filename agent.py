@@ -320,31 +320,51 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # ── Keep session alive until call actually ends ──────────────────────────
     if phone_number:
         _disconnect_event = asyncio.Event()
+        _finalized = False
+
+        async def _finalize_call(reason_trigger=""):
+            nonlocal _finalized
+            if _finalized:
+                return
+            _finalized = True
+            final_dur = max(1, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
+            final_outcome = tool_ctx.outcome or ("completed" if call_start_time else "failed")
+            final_reason = tool_ctx.end_reason or ("Call completed normally" if call_start_time else "Call ended before answer")
+            logger.info("FINALIZING CALL in DB: id=%s outcome=%s dur=%ss trigger=%s", call_id, final_outcome, final_dur, reason_trigger)
+            if call_id:
+                try:
+                    await update_call_status(
+                        call_id=call_id,
+                        outcome=final_outcome,
+                        reason=final_reason,
+                        duration_seconds=final_dur,
+                        recording_url=tool_ctx.recording_url,
+                        campaign_id=campaign_id,
+                    )
+                    await _log("info", f"Call finalized in DB — id={call_id} outcome={final_outcome} duration={final_dur}s recording_url={tool_ctx.recording_url}")
+                except Exception as _up_err:
+                    logger.error("Error finalizing call status: %s", _up_err)
 
         def _signal_disconnect(reason=""):
             logger.info("Call disconnect triggered: %s", reason)
+            asyncio.create_task(_finalize_call(reason))
             _disconnect_event.set()
 
         ctx.room.on("participant_disconnected", lambda p: _signal_disconnect(f"participant {p.identity} left"))
         ctx.room.on("disconnected", lambda: _signal_disconnect("room closed"))
 
-        # Monitor active call: once participant joins, detect when they leave
+        # Continuous liveness monitor: checks every 1.5s
         async def _hangup_watcher():
-            has_seen_participant = False
-            for _ in range(60):
-                if len(ctx.room.remote_participants) > 0:
-                    has_seen_participant = True
-                    break
-                await asyncio.sleep(0.5)
-
             while not _disconnect_event.is_set():
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
                 if not ctx.room.isconnected():
                     _signal_disconnect("room isconnected=False")
                     break
-                if has_seen_participant and len(ctx.room.remote_participants) == 0:
-                    _signal_disconnect("customer hung up (0 remote participants remaining)")
-                    break
+                if len(ctx.room.remote_participants) == 0:
+                    await asyncio.sleep(1.0)
+                    if len(ctx.room.remote_participants) == 0:
+                        _signal_disconnect("remote_participants became empty (customer hung up)")
+                        break
 
         _watcher_task = asyncio.create_task(_hangup_watcher())
 
@@ -354,20 +374,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("warning", "Call reached 1-hour safety timeout — shutting down")
         finally:
             _watcher_task.cancel()
-            final_dur = max(1, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
-            if call_id:
-                try:
-                    await update_call_status(
-                        call_id=call_id,
-                        outcome=tool_ctx.outcome or ("completed" if call_start_time else "failed"),
-                        reason=tool_ctx.end_reason or ("Call completed normally" if call_start_time else "Call ended before answer"),
-                        duration_seconds=final_dur,
-                        recording_url=tool_ctx.recording_url,
-                        campaign_id=campaign_id,
-                    )
-                    await _log("info", f"Call finalized in DB — id={call_id} outcome={tool_ctx.outcome or 'completed'} duration={final_dur}s recording_url={tool_ctx.recording_url}")
-                except Exception as _up_err:
-                    await _log("error", f"Call final status notice: {_up_err}")
+            await _finalize_call("entrypoint_finally")
 
         try:
             await session.aclose()

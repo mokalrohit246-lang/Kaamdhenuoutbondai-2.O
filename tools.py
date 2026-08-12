@@ -85,6 +85,8 @@ class AppointmentTools(llm.ToolContext):
         """
         try:
             booking_id = await insert_appointment(name, phone, date, time, service)
+            self.outcome = "booked"
+            self.end_reason = f"Appointment booked: {booking_id}"
             if self.call_id:
                 await update_call_status(self.call_id, outcome="booked", reason=f"Appointment booked: {booking_id}")
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
@@ -100,7 +102,7 @@ class AppointmentTools(llm.ToolContext):
         """
         self.outcome = outcome
         self.end_reason = reason
-        duration = max(0, int(time.time() - self._call_start_time))
+        duration = max(1, int(time.time() - (self._call_start_time or time.time())))
         try:
             if self.call_id:
                 await update_call_status(
