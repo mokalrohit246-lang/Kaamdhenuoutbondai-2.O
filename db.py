@@ -403,51 +403,45 @@ async def complete_call_log(
     transcript: Optional[str] = None,
     phone_number: Optional[str] = None, lead_name: Optional[str] = None,
 ) -> bool:
-    """Update existing call log with final outcome, duration, cost, recording_url.
-    Falls back to upsert if the row doesn't exist (call_id mismatch safety net)."""
+    """Finalize call log using UPSERT (INSERT ON CONFLICT UPDATE).
+    This guarantees the row is created or updated regardless of prior state."""
     try:
         db = await _adb()
         calc_cost = cost if cost is not None else round((duration_seconds / 60.0) * 1.20, 2)
-        updates: dict = {
+
+        # Build the full row for UPSERT — this works whether the row exists or not
+        row: dict = {
+            "id": call_id,
+            "phone_number": phone_number or "unknown",
+            "lead_name": lead_name,
             "outcome": outcome,
             "duration_seconds": duration_seconds,
             "call_cost": calc_cost,
+            "timestamp": datetime.now().isoformat(),
         }
         if reason is not None:
-            updates["reason"] = reason
+            row["reason"] = reason
         if recording_url is not None:
-            updates["recording_url"] = recording_url
+            row["recording_url"] = recording_url
         if transcript is not None:
-            updates["transcript"] = transcript
+            row["transcript"] = transcript
         if notes is not None:
-            updates["notes"] = notes
+            row["notes"] = notes
         if lead_status is not None:
-            updates["lead_status"] = lead_status
+            row["lead_status"] = lead_status
+        if campaign_id is not None:
+            row["campaign_id"] = campaign_id
 
-        # Attempt UPDATE first
-        res = await db.table("call_logs").update(updates).eq("id", call_id).execute()
-        updated_rows = res.data if res and hasattr(res, 'data') else []
+        res = await db.table("call_logs").upsert(row, on_conflict="id").execute()
+        saved_rows = res.data if res and hasattr(res, 'data') else []
+        logger.info("complete_call_log UPSERT: id=%s outcome=%s dur=%ss cost=₹%s rows=%d",
+                    call_id, outcome, duration_seconds, calc_cost, len(saved_rows))
 
-        if updated_rows:
-            logger.info("complete_call_log UPDATE OK: id=%s outcome=%s dur=%ss cost=₹%s rec=%s rows=%d",
-                        call_id, outcome, duration_seconds, calc_cost, recording_url, len(updated_rows))
-        else:
-            # UPDATE matched 0 rows — the call_id doesn't exist in the table.
-            # This can happen if the initial INSERT failed or used a different ID.
-            # FALLBACK: upsert the full row so the data is NEVER lost.
-            logger.warning("complete_call_log UPDATE returned 0 rows for id=%s. Falling back to UPSERT.", call_id)
-            fallback_row = {
-                "id": call_id,
-                "phone_number": phone_number or "unknown",
-                "lead_name": lead_name,
-                "outcome": outcome,
-                "duration_seconds": duration_seconds,
-                "call_cost": calc_cost,
-                "timestamp": datetime.now().isoformat(),
-            }
-            fallback_row.update(updates)
-            await db.table("call_logs").upsert(fallback_row, on_conflict="id").execute()
-            logger.info("complete_call_log UPSERT fallback OK: id=%s outcome=%s dur=%ss", call_id, outcome, duration_seconds)
+        # Also log to error_logs so it's visible in dashboard Logs tab
+        try:
+            await log_error("agent", f"DB UPSERT OK: id={call_id} outcome={outcome} dur={duration_seconds}s cost=₹{calc_cost} rec={recording_url} rows={len(saved_rows)}", "", "info")
+        except Exception:
+            pass
 
         if calc_cost > 0:
             try:
@@ -462,6 +456,11 @@ async def complete_call_log(
         return True
     except Exception as exc:
         logger.error("Could not complete_call_log for %s: %s", call_id, exc)
+        # Log to dashboard so user can see the error
+        try:
+            await log_error("agent", f"DB UPSERT FAILED: id={call_id} error={exc}", "", "error")
+        except Exception:
+            pass
         return False
 
 

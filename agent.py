@@ -341,7 +341,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
         if call_id:
             try:
-                await complete_call_log(
+                db_ok = await complete_call_log(
                     call_id=call_id,
                     outcome=final_outcome,
                     duration_seconds=final_dur,
@@ -352,9 +352,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     phone_number=phone_number,
                     lead_name=lead_name,
                 )
-                await _log("info", f"Call finalized in DB — id={call_id} outcome={final_outcome} duration={final_dur}s cost=₹{final_cost} rec={tool_ctx.recording_url}")
+                if db_ok:
+                    await _log("info", f"Call finalized in DB — id={call_id} outcome={final_outcome} duration={final_dur}s cost=₹{final_cost} rec={tool_ctx.recording_url}")
+                else:
+                    await _log("error", f"complete_call_log returned False — id={call_id} outcome={final_outcome} duration={final_dur}s. DB update may have failed!")
             except Exception as _db_err:
-                logger.error("Failed to complete_call_log in finally: %s", _db_err)
+                await _log("error", f"Failed to complete_call_log in finally: {_db_err}")
 
         try:
             await session.aclose()
