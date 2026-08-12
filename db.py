@@ -401,8 +401,10 @@ async def complete_call_log(
     reason: Optional[str] = None, notes: Optional[str] = None,
     lead_status: Optional[str] = None, campaign_id: Optional[str] = None,
     transcript: Optional[str] = None,
+    phone_number: Optional[str] = None, lead_name: Optional[str] = None,
 ) -> bool:
-    """Update existing call log with final outcome, duration, cost, recording_url."""
+    """Update existing call log with final outcome, duration, cost, recording_url.
+    Falls back to upsert if the row doesn't exist (call_id mismatch safety net)."""
     try:
         db = await _adb()
         calc_cost = cost if cost is not None else round((duration_seconds / 60.0) * 1.20, 2)
@@ -422,9 +424,30 @@ async def complete_call_log(
         if lead_status is not None:
             updates["lead_status"] = lead_status
 
-        await db.table("call_logs").update(updates).eq("id", call_id).execute()
-        logger.info("complete_call_log SUCCESS: id=%s outcome=%s dur=%ss cost=₹%s rec=%s",
-                    call_id, outcome, duration_seconds, calc_cost, recording_url)
+        # Attempt UPDATE first
+        res = await db.table("call_logs").update(updates).eq("id", call_id).execute()
+        updated_rows = res.data if res and hasattr(res, 'data') else []
+
+        if updated_rows:
+            logger.info("complete_call_log UPDATE OK: id=%s outcome=%s dur=%ss cost=₹%s rec=%s rows=%d",
+                        call_id, outcome, duration_seconds, calc_cost, recording_url, len(updated_rows))
+        else:
+            # UPDATE matched 0 rows — the call_id doesn't exist in the table.
+            # This can happen if the initial INSERT failed or used a different ID.
+            # FALLBACK: upsert the full row so the data is NEVER lost.
+            logger.warning("complete_call_log UPDATE returned 0 rows for id=%s. Falling back to UPSERT.", call_id)
+            fallback_row = {
+                "id": call_id,
+                "phone_number": phone_number or "unknown",
+                "lead_name": lead_name,
+                "outcome": outcome,
+                "duration_seconds": duration_seconds,
+                "call_cost": calc_cost,
+                "timestamp": datetime.now().isoformat(),
+            }
+            fallback_row.update(updates)
+            await db.table("call_logs").upsert(fallback_row, on_conflict="id").execute()
+            logger.info("complete_call_log UPSERT fallback OK: id=%s outcome=%s dur=%ss", call_id, outcome, duration_seconds)
 
         if calc_cost > 0:
             try:

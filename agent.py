@@ -274,6 +274,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 tool_ctx.end_reason = err_msg
                 return
 
+            # Compute S3/recording URLs
+            _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
+            _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
+            if "supabase.co/storage/v1/s3" in _s3_ep:
+                _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
+                tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+            elif _s3_ep:
+                tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+
             # Fast Direct Greeting
             greeting = f"Hi {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?"
             try:
@@ -340,6 +349,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     recording_url=tool_ctx.recording_url,
                     reason=final_reason,
                     campaign_id=campaign_id,
+                    phone_number=phone_number,
+                    lead_name=lead_name,
                 )
                 await _log("info", f"Call finalized in DB — id={call_id} outcome={final_outcome} duration={final_dur}s cost=₹{final_cost} rec={tool_ctx.recording_url}")
             except Exception as _db_err:
