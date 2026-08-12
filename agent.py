@@ -272,7 +272,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
             if call_id:
                 await update_call_status(call_id, outcome="failed", reason=err_msg)
-        # Set recording URL immediately so it is always present in call log
+            ctx.shutdown()
+            return
+
+        tool_ctx._call_start_time = call_start_time
         _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
         _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
         if "supabase.co/storage/v1/s3" in _s3_ep:
