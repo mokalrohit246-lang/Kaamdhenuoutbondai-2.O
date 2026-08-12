@@ -53,19 +53,10 @@ def _sdb():
 
 
 async def _adb():
-    try:
-        try:
-            from supabase import acreate_client
-            url = os.getenv("SUPABASE_URL", "").strip()
-            key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
-            return await acreate_client(url, key)
-        except (ImportError, AttributeError):
-            from supabase._async.client import create_client
-            url = os.getenv("SUPABASE_URL", "").strip()
-            key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
-            return await create_client(url, key)
-    except Exception:
-        return _sdb()
+    from supabase._async.client import create_client
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    return await create_client(url, key)
 
 
 def init_db() -> None:
@@ -427,11 +418,7 @@ async def update_call_status(
         if lead_status is not None:
             updates["lead_status"] = lead_status
 
-        q = db.table("call_logs").update(updates).eq("id", call_id)
-        res = q.execute()
-        if asyncio.iscoroutine(res):
-            await res
-
+        await db.table("call_logs").update(updates).eq("id", call_id).execute()
         logger.info("Call updated in DB: id=%s outcome=%s dur=%ss cost=%s", call_id, outcome, duration_seconds, updates.get("call_cost"))
 
         # If campaign call completed with duration, update campaign minute cap
