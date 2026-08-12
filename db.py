@@ -70,6 +70,23 @@ def init_db() -> None:
         db.table("settings").select("key").limit(1).execute()
         logger.info("Supabase connected successfully")
 
+        # Auto-migrate: ensure call_cost column exists in call_logs
+        try:
+            db.postgrest.rpc("", {}).execute()  # no-op to test
+        except Exception:
+            pass
+        try:
+            # Try to read call_cost — if it fails, column is missing
+            db.table("call_logs").select("call_cost").limit(1).execute()
+            logger.info("call_cost column exists in call_logs")
+        except Exception:
+            logger.warning("call_cost column missing — creating it now via RPC")
+            try:
+                db.rpc("exec_sql", {"query": "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS call_cost REAL DEFAULT 0.0;"}).execute()
+                logger.info("call_cost column added successfully")
+            except Exception as alt_exc:
+                logger.warning("Could not auto-add call_cost column: %s. Please run in SQL Editor: ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS call_cost REAL DEFAULT 0.0;", alt_exc)
+
         # Auto-create call-recordings public bucket if not present
         try:
             bucket_name = os.getenv("S3_BUCKET", "call-recordings") or "call-recordings"
@@ -353,6 +370,30 @@ async def get_appointments_by_phone(phone: str) -> list:
 
 # ── Call logs ─────────────────────────────────────────────────────────────────
 
+async def _safe_upsert_call_log(db, row: dict):
+    """Safely upserts to call_logs table, automatically stripping any columns missing in Supabase schema cache."""
+    current_row = dict(row)
+    for _ in range(6):
+        try:
+            return await db.table("call_logs").upsert(current_row, on_conflict="id").execute()
+        except Exception as err:
+            err_str = str(err)
+            import re
+            m = re.search(r"Could not find the '([^']+)' column", err_str)
+            if m:
+                missing_col = m.group(1)
+                logger.warning("Auto-removing missing column '%s' from call_logs payload and retrying", missing_col)
+                current_row.pop(missing_col, None)
+                continue
+            # Fallback to absolute base schema
+            core_keys = {"id", "phone_number", "lead_name", "outcome", "reason", "duration_seconds", "timestamp"}
+            if any(k not in core_keys for k in current_row.keys()):
+                current_row = {k: v for k, v in current_row.items() if k in core_keys}
+                logger.warning("Retrying upsert with base core columns only: %s", list(current_row.keys()))
+                continue
+            raise err
+
+
 async def start_call_log(
     call_id: str, phone_number: str, lead_name: Optional[str] = None,
     service_type: Optional[str] = None, property_type: Optional[str] = None,
@@ -383,7 +424,7 @@ async def start_call_log(
         if campaign_id:
             row["campaign_id"] = campaign_id
 
-        await db.table("call_logs").upsert(row, on_conflict="id").execute()
+        await _safe_upsert_call_log(db, row)
         logger.info("start_call_log: id=%s phone=%s lead=%s", call_id, phone_number, lead_name)
         return True
     except Exception as exc:
@@ -404,7 +445,8 @@ async def complete_call_log(
     phone_number: Optional[str] = None, lead_name: Optional[str] = None,
 ) -> bool:
     """Finalize call log using UPSERT (INSERT ON CONFLICT UPDATE).
-    This guarantees the row is created or updated regardless of prior state."""
+    This guarantees the row is created or updated regardless of prior state.
+    Handles missing schema columns dynamically and gracefully."""
     try:
         db = await _adb()
         calc_cost = cost if cost is not None else round((duration_seconds / 60.0) * 1.20, 2)
@@ -432,9 +474,9 @@ async def complete_call_log(
         if campaign_id is not None:
             row["campaign_id"] = campaign_id
 
-        res = await db.table("call_logs").upsert(row, on_conflict="id").execute()
+        res = await _safe_upsert_call_log(db, row)
         saved_rows = res.data if res and hasattr(res, 'data') else []
-        logger.info("complete_call_log UPSERT: id=%s outcome=%s dur=%ss cost=₹%s rows=%d",
+        logger.info("complete_call_log UPSERT OK: id=%s outcome=%s dur=%ss cost=₹%s rows=%d",
                     call_id, outcome, duration_seconds, calc_cost, len(saved_rows))
 
         # Also log to error_logs so it's visible in dashboard Logs tab
@@ -483,7 +525,6 @@ async def log_call(
         row: dict = {
             "id": cid, "phone_number": phone_number, "lead_name": lead_name,
             "outcome": outcome, "reason": reason, "duration_seconds": duration_seconds,
-            "call_cost": cost,
             "timestamp": datetime.now().isoformat(),
         }
         if recording_url:
@@ -502,7 +543,8 @@ async def log_call(
             row["location"] = location
         if transcript:
             row["transcript"] = transcript
-        await db.table("call_logs").upsert(row, on_conflict="id").execute()
+        row["call_cost"] = cost
+        await _safe_upsert_call_log(db, row)
         if cost > 0:
             await deduct_wallet(cost)
         if campaign_id and duration_seconds > 0:
