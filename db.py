@@ -353,13 +353,13 @@ async def get_appointments_by_phone(phone: str) -> list:
 
 # ── Call logs ─────────────────────────────────────────────────────────────────
 
-async def insert_initial_call(
+async def start_call_log(
     call_id: str, phone_number: str, lead_name: Optional[str] = None,
     service_type: Optional[str] = None, property_type: Optional[str] = None,
     budget: Optional[str] = None, location: Optional[str] = None,
     notes: Optional[str] = None, campaign_id: Optional[str] = None,
 ) -> bool:
-    """Insert initial call record when call is dispatched so lead info is never lost."""
+    """Insert initial call log record when call is initiated/dispatched."""
     try:
         db = await _adb()
         row: dict = {
@@ -369,6 +369,7 @@ async def insert_initial_call(
             "outcome": "initiated",
             "reason": "Call dispatched to LiveKit",
             "duration_seconds": 0,
+            "call_cost": 0.0,
             "timestamp": datetime.now().isoformat(),
         }
         if property_type or service_type:
@@ -381,34 +382,37 @@ async def insert_initial_call(
             row["notes"] = notes
         if campaign_id:
             row["campaign_id"] = campaign_id
+
         await db.table("call_logs").upsert(row, on_conflict="id").execute()
+        logger.info("start_call_log: id=%s phone=%s lead=%s", call_id, phone_number, lead_name)
         return True
     except Exception as exc:
-        logger.warning("Could not insert initial call log: %s", exc)
+        logger.error("Could not insert start_call_log for %s: %s", call_id, exc)
         return False
 
 
-async def update_call_status(
-    call_id: str, outcome: str, reason: Optional[str] = None,
-    duration_seconds: Optional[int] = None, recording_url: Optional[str] = None,
-    transcript: Optional[str] = None, notes: Optional[str] = None,
+# Alias for backward compatibility
+insert_initial_call = start_call_log
+
+
+async def complete_call_log(
+    call_id: str, outcome: str, duration_seconds: int = 0,
+    cost: Optional[float] = None, recording_url: Optional[str] = None,
+    reason: Optional[str] = None, notes: Optional[str] = None,
     lead_status: Optional[str] = None, campaign_id: Optional[str] = None,
+    transcript: Optional[str] = None,
 ) -> bool:
-    """Update call log with live progress, outcome, duration, cost, and transcript."""
+    """Update existing call log with final outcome, duration, cost, recording_url."""
     try:
         db = await _adb()
-        updates: dict = {"outcome": outcome}
+        calc_cost = cost if cost is not None else round((duration_seconds / 60.0) * 1.20, 2)
+        updates: dict = {
+            "outcome": outcome,
+            "duration_seconds": duration_seconds,
+            "call_cost": calc_cost,
+        }
         if reason is not None:
             updates["reason"] = reason
-        if duration_seconds is not None:
-            updates["duration_seconds"] = duration_seconds
-            cost = round((duration_seconds / 60.0) * 1.20, 2)
-            updates["call_cost"] = cost
-            if cost > 0:
-                try:
-                    await deduct_wallet(cost)
-                except Exception as _w_err:
-                    logger.warning("Wallet deduction notice: %s", _w_err)
         if recording_url is not None:
             updates["recording_url"] = recording_url
         if transcript is not None:
@@ -419,16 +423,27 @@ async def update_call_status(
             updates["lead_status"] = lead_status
 
         await db.table("call_logs").update(updates).eq("id", call_id).execute()
-        logger.info("Call updated in DB: id=%s outcome=%s dur=%ss cost=%s", call_id, outcome, duration_seconds, updates.get("call_cost"))
+        logger.info("complete_call_log SUCCESS: id=%s outcome=%s dur=%ss cost=₹%s rec=%s",
+                    call_id, outcome, duration_seconds, calc_cost, recording_url)
 
-        # If campaign call completed with duration, update campaign minute cap
-        if campaign_id and duration_seconds and duration_seconds > 0:
+        if calc_cost > 0:
+            try:
+                await deduct_wallet(calc_cost)
+            except Exception as _w_err:
+                logger.warning("Wallet deduction notice: %s", _w_err)
+
+        if campaign_id and duration_seconds > 0:
             call_minutes = max(1, round(duration_seconds / 60))
             await increment_consumed_minutes(campaign_id, call_minutes)
+
         return True
     except Exception as exc:
-        logger.error("Could not update call status for %s: %s", call_id, exc)
+        logger.error("Could not complete_call_log for %s: %s", call_id, exc)
         return False
+
+
+# Alias for backward compatibility
+update_call_status = complete_call_log
 
 
 async def log_call(

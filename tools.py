@@ -102,30 +102,11 @@ class AppointmentTools(llm.ToolContext):
         """
         self.outcome = outcome
         self.end_reason = reason
-        duration = max(1, int(time.time() - (self._call_start_time or time.time())))
-        try:
-            if self.call_id:
-                await update_call_status(
-                    call_id=self.call_id,
-                    outcome=outcome,
-                    reason=reason,
-                    duration_seconds=duration,
-                    recording_url=self.recording_url,
-                    campaign_id=self.campaign_id,
-                )
-            else:
-                await log_call(
-                    phone_number=self.phone_number or "unknown",
-                    lead_name=self.lead_name, outcome=outcome, reason=reason,
-                    duration_seconds=duration, recording_url=self.recording_url,
-                    campaign_id=self.campaign_id,
-                )
-        except Exception as exc:
-            logger.error("Failed to log call: %s", exc)
+        logger.info("end_call triggered by AI: outcome=%s reason=%s", outcome, reason)
         try:
             await self.ctx.room.disconnect()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Room disconnect notice: %s", exc)
         return "Call ended."
 
     @llm.function_tool

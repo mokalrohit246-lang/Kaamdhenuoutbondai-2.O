@@ -29,7 +29,7 @@ except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation, silero
 
-from db import init_db, log_error, get_enabled_tools, update_call_status, get_setting
+from db import init_db, log_error, get_enabled_tools, update_call_status, complete_call_log, start_call_log, get_setting
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -232,160 +232,122 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await session.start(**_session_kwargs)
     await _log("info", "Agent session active in room")
 
-    # ── Dial SIP Participant ─────────────────────────────────────────────────
     call_start_time = None
-    if phone_number:
-        trunk_id = (
-            (trunk_id_override if trunk_id_override and trunk_id_override.startswith("ST_") else "") or
-            (os.getenv("OUTBOUND_TRUNK_ID", "").strip() if os.getenv("OUTBOUND_TRUNK_ID", "").strip().startswith("ST_") else "") or
-            (await get_setting("OUTBOUND_TRUNK_ID", "")) or
-            (trunk_id_override or os.getenv("OUTBOUND_TRUNK_ID", ""))
-        ).strip()
 
-        if not trunk_id:
-            err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create SIP Trunk' in Settings."
-            await _log("error", err_msg)
-            if call_id:
-                await update_call_status(call_id, outcome="failed", reason=err_msg)
-            ctx.shutdown()
-            return
+    # ── CRITICAL: ENTIRE CALL WRAPPED IN TRY...FINALLY ───────────────────────
+    try:
+        if phone_number:
+            trunk_id = (
+                (trunk_id_override if trunk_id_override and trunk_id_override.startswith("ST_") else "") or
+                (os.getenv("OUTBOUND_TRUNK_ID", "").strip() if os.getenv("OUTBOUND_TRUNK_ID", "").strip().startswith("ST_") else "") or
+                (await get_setting("OUTBOUND_TRUNK_ID", "")) or
+                (trunk_id_override or os.getenv("OUTBOUND_TRUNK_ID", ""))
+            ).strip()
 
-        await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
-        if call_id:
-            asyncio.create_task(update_call_status(call_id, outcome="ringing", reason="Dialing customer via SIP"))
-
-        try:
-            await ctx.api.sip.create_sip_participant(
-                api.CreateSIPParticipantRequest(
-                    room_name=ctx.room.name,
-                    sip_trunk_id=trunk_id,
-                    sip_call_to=phone_number,
-                    participant_identity=f"sip_{phone_number}",
-                    wait_until_answered=True,
-                )
-            )
-            call_start_time = time.time()
-            if call_id:
-                asyncio.create_task(update_call_status(call_id, outcome="in_progress", reason="Call answered by customer"))
-        except Exception as exc:
-            err_msg = f"SIP dial failed: {exc}"
-            await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
-            if call_id:
-                await update_call_status(call_id, outcome="failed", reason=err_msg)
-            ctx.shutdown()
-            return
-
-        tool_ctx._call_start_time = call_start_time
-        _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
-        _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
-        if "supabase.co/storage/v1/s3" in _s3_ep:
-            _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
-            tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
-        elif _s3_ep:
-            tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
-
-        # ── Fast Direct Greeting ─────────────────────────────────────────────
-        greeting = f"Hi {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?"
-        try:
-            await session.generate_reply(instructions=greeting)
-            await _log("info", f"Greeting spoken to {phone_number}")
-        except Exception as _gr_exc:
-            await _log("warning", f"Greeting notice: {_gr_exc}")
-
-        # Non-blocking background recording
-        async def _start_recording_bg():
-            _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
-            _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
-            _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
-            if _aws_key and _aws_secret and _aws_bucket:
-                try:
-                    _recording_path = f"recordings/{ctx.room.name}.ogg"
-                    _egress_req = api.RoomCompositeEgressRequest(
-                        room_name=ctx.room.name, audio_only=True,
-                        file_outputs=[api.EncodedFileOutput(
-                            file_type=api.EncodedFileType.OGG, filepath=_recording_path,
-                            s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
-                                            bucket=_aws_bucket, region=_s3_region, endpoint=_s3_ep),
-                        )],
-                    )
-                    _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
-                    await _log("info", f"Recording egress started: {_egress.egress_id}")
-                except Exception as _exc:
-                    await _log("warning", f"Recording start notice: {_exc}")
-
-        asyncio.create_task(_start_recording_bg())
-    else:
-        await session.start(**_session_kwargs)
-
-    # ── Keep session alive until call actually ends ──────────────────────────
-    if phone_number:
-        _disconnect_event = asyncio.Event()
-        _finalized = False
-
-        async def _finalize_call(reason_trigger=""):
-            nonlocal _finalized
-            if _finalized:
+            if not trunk_id:
+                err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create SIP Trunk' in Settings."
+                await _log("error", err_msg)
+                tool_ctx.outcome = "failed"
+                tool_ctx.end_reason = err_msg
                 return
-            _finalized = True
-            final_dur = max(1, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
-            final_outcome = tool_ctx.outcome or ("completed" if call_start_time else "failed")
-            final_reason = tool_ctx.end_reason or ("Call completed normally" if call_start_time else "Call ended before answer")
-            logger.info("FINALIZING CALL in DB: id=%s outcome=%s dur=%ss trigger=%s", call_id, final_outcome, final_dur, reason_trigger)
-            if call_id:
-                try:
-                    await update_call_status(
-                        call_id=call_id,
-                        outcome=final_outcome,
-                        reason=final_reason,
-                        duration_seconds=final_dur,
-                        recording_url=tool_ctx.recording_url,
-                        campaign_id=campaign_id,
+
+            await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
+            asyncio.create_task(complete_call_log(call_id, outcome="ringing", reason="Dialing customer via SIP"))
+
+            try:
+                await ctx.api.sip.create_sip_participant(
+                    api.CreateSIPParticipantRequest(
+                        room_name=ctx.room.name,
+                        sip_trunk_id=trunk_id,
+                        sip_call_to=phone_number,
+                        participant_identity=f"sip_{phone_number}",
+                        wait_until_answered=True,
                     )
-                    await _log("info", f"Call finalized in DB — id={call_id} outcome={final_outcome} duration={final_dur}s recording_url={tool_ctx.recording_url}")
-                except Exception as _up_err:
-                    logger.error("Error finalizing call status: %s", _up_err)
+                )
+                call_start_time = time.time()
+                tool_ctx._call_start_time = call_start_time
+                asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer"))
+            except Exception as exc:
+                err_msg = f"SIP dial failed: {exc}"
+                await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+                tool_ctx.outcome = "failed"
+                tool_ctx.end_reason = err_msg
+                return
 
-        def _signal_disconnect(reason=""):
-            logger.info("Call disconnect triggered: %s", reason)
-            asyncio.create_task(_finalize_call(reason))
-            _disconnect_event.set()
+            # Fast Direct Greeting
+            greeting = f"Hi {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?"
+            try:
+                await session.generate_reply(instructions=greeting)
+                await _log("info", f"Greeting spoken to {phone_number}")
+            except Exception as _gr_exc:
+                await _log("warning", f"Greeting notice: {_gr_exc}")
 
-        ctx.room.on("participant_disconnected", lambda p: _signal_disconnect(f"participant {p.identity} left"))
-        ctx.room.on("disconnected", lambda: _signal_disconnect("room closed"))
+            # Non-blocking background recording
+            async def _start_recording_bg():
+                _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
+                _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
+                _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
+                if _aws_key and _aws_secret and _aws_bucket:
+                    try:
+                        _recording_path = f"recordings/{ctx.room.name}.ogg"
+                        _egress_req = api.RoomCompositeEgressRequest(
+                            room_name=ctx.room.name, audio_only=True,
+                            file_outputs=[api.EncodedFileOutput(
+                                file_type=api.EncodedFileType.OGG, filepath=_recording_path,
+                                s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
+                                                bucket=_aws_bucket, region=_s3_region, endpoint=_s3_ep),
+                            )],
+                        )
+                        _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
+                        await _log("info", f"Recording egress started: {_egress.egress_id}")
+                    except Exception as _exc:
+                        await _log("warning", f"Recording start notice: {_exc}")
 
-        # Continuous liveness monitor: checks every 1.5s
-        async def _hangup_watcher():
-            while not _disconnect_event.is_set():
-                await asyncio.sleep(1.5)
-                if not ctx.room.isconnected():
-                    _signal_disconnect("room isconnected=False")
-                    break
+            asyncio.create_task(_start_recording_bg())
+
+            # ── Active Call Loop — Wait until user or agent disconnects ────────
+            while ctx.room.isconnected():
+                await asyncio.sleep(1.0)
+                # When customer hangs up, remote_participants becomes empty
                 if len(ctx.room.remote_participants) == 0:
+                    # Give 1 second confirmation to prevent false alarm
                     await asyncio.sleep(1.0)
-                    if len(ctx.room.remote_participants) == 0:
-                        _signal_disconnect("remote_participants became empty (customer hung up)")
+                    if len(ctx.room.remote_participants) == 0 or not ctx.room.isconnected():
+                        await _log("info", "Customer hung up (0 remote participants remaining)")
                         break
+        else:
+            # Inbound / fallback: wait until disconnected
+            while ctx.room.isconnected():
+                await asyncio.sleep(1.0)
 
-        _watcher_task = asyncio.create_task(_hangup_watcher())
+    finally:
+        # ── GUARANTEED FINALIZATION IN FINALLY BLOCK ──────────────────────────
+        final_dur = max(1, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
+        final_outcome = tool_ctx.outcome or ("completed" if call_start_time else "failed")
+        final_reason = tool_ctx.end_reason or ("Call completed normally" if call_start_time else "Call ended before answer")
+        final_cost = round((final_dur / 60.0) * 1.20, 2)
 
-        try:
-            await asyncio.wait_for(_disconnect_event.wait(), timeout=3600)
-        except asyncio.TimeoutError:
-            await _log("warning", "Call reached 1-hour safety timeout — shutting down")
-        finally:
-            _watcher_task.cancel()
-            await _finalize_call("entrypoint_finally")
+        logger.info("EXECUTING FINALLY BLOCK: id=%s outcome=%s dur=%ss cost=₹%s",
+                    call_id, final_outcome, final_dur, final_cost)
+
+        if call_id:
+            try:
+                await complete_call_log(
+                    call_id=call_id,
+                    outcome=final_outcome,
+                    duration_seconds=final_dur,
+                    cost=final_cost,
+                    recording_url=tool_ctx.recording_url,
+                    reason=final_reason,
+                    campaign_id=campaign_id,
+                )
+                await _log("info", f"Call finalized in DB — id={call_id} outcome={final_outcome} duration={final_dur}s cost=₹{final_cost} rec={tool_ctx.recording_url}")
+            except Exception as _db_err:
+                logger.error("Failed to complete_call_log in finally: %s", _db_err)
 
         try:
             await session.aclose()
         except Exception:
-            pass
-    else:
-        _done = asyncio.Event()
-        ctx.room.on("disconnected", lambda: _done.set())
-        try:
-            await asyncio.wait_for(_done.wait(), timeout=3600)
-        except asyncio.TimeoutError:
             pass
 
 
