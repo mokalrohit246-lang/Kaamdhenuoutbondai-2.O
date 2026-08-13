@@ -611,6 +611,112 @@ async def get_contacts() -> list:
         return []
 
 
+async def lookup_inbound_caller(caller_phone: str) -> dict:
+    """
+    Lookup caller in call_logs and campaigns to retrieve context for an inbound callback.
+    Matches phone with or without country code.
+    """
+    try:
+        db = await _adb()
+        clean = (caller_phone or "").strip().replace(" ", "").replace("-", "")
+        if not clean:
+            return {"found": False, "phone_number": "", "lead_name": "there", "business_name": "Kaamdhenu Real Estate", "service_type": "real estate services"}
+
+        # Search candidates: exact, with +, without +, last 10 digits
+        candidates = [clean]
+        if not clean.startswith("+"):
+            candidates.append(f"+{clean}")
+            if len(clean) == 10:
+                candidates.append(f"+91{clean}")
+        else:
+            candidates.append(clean[1:])
+            if clean.startswith("+91") and len(clean) == 13:
+                candidates.append(clean[3:])
+
+        rows = []
+        for cand in candidates:
+            res = await db.table("call_logs").select("*").eq("phone_number", cand).order("timestamp", desc=True).limit(5).execute()
+            if res.data:
+                rows = res.data
+                break
+
+        found = len(rows) > 0
+        lead_name = None
+        campaign_id = None
+        campaign_name = None
+        service_type = "real estate services"
+        property_type = None
+        budget = None
+        location = None
+        notes = None
+        broker_phone = None
+        custom_prompt = None
+        last_outcome = None
+        last_call_time = None
+
+        if found:
+            latest = rows[0]
+            lead_name = latest.get("lead_name")
+            campaign_id = latest.get("campaign_id")
+            service_type = latest.get("property_type") or latest.get("service_type") or "real estate services"
+            property_type = latest.get("property_type")
+            budget = latest.get("budget")
+            location = latest.get("location")
+            notes = latest.get("notes")
+            last_outcome = latest.get("outcome")
+            last_call_time = latest.get("timestamp")
+
+            if campaign_id:
+                try:
+                    c_res = await db.table("campaigns").select("*").eq("id", campaign_id).limit(1).execute()
+                    if c_res.data:
+                        c_row = c_res.data[0]
+                        campaign_name = c_row.get("name")
+                        broker_phone = c_row.get("broker_phone")
+                        custom_prompt = c_row.get("system_prompt")
+                except Exception as _ce:
+                    logger.warning("Campaign lookup in inbound helper: %s", _ce)
+
+        biz_name = await get_setting("BUSINESS_NAME", "Kaamdhenu Real Estate") or "Kaamdhenu Real Estate"
+
+        return {
+            "found": found,
+            "phone_number": clean,
+            "lead_name": lead_name or "there",
+            "business_name": biz_name,
+            "service_type": service_type,
+            "property_type": property_type,
+            "budget": budget,
+            "location": location,
+            "notes": notes,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "broker_phone": broker_phone,
+            "custom_prompt": custom_prompt,
+            "last_outcome": last_outcome,
+            "last_call_time": last_call_time,
+        }
+    except Exception as exc:
+        logger.error("lookup_inbound_caller error for %s: %s", caller_phone, exc)
+        return {
+            "found": False,
+            "phone_number": caller_phone,
+            "lead_name": "there",
+            "business_name": "Kaamdhenu Real Estate",
+            "service_type": "real estate services",
+            "property_type": None,
+            "budget": None,
+            "location": None,
+            "notes": None,
+            "campaign_id": None,
+            "campaign_name": None,
+            "broker_phone": None,
+            "custom_prompt": None,
+            "last_outcome": None,
+            "last_call_time": None,
+        }
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 async def get_stats() -> dict:

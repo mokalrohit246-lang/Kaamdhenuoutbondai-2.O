@@ -29,7 +29,10 @@ except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation, silero
 
-from db import init_db, log_error, get_enabled_tools, update_call_status, complete_call_log, start_call_log, get_setting
+from db import (
+    init_db, log_error, get_enabled_tools, update_call_status,
+    complete_call_log, start_call_log, get_setting, lookup_inbound_caller,
+)
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -157,6 +160,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     broker_phone: Optional[str] = None
     trunk_id_override: Optional[str] = None
 
+    is_inbound = False
+
     if ctx.job.metadata:
         try:
             data = json.loads(ctx.job.metadata)
@@ -178,6 +183,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             trunk_id_override   = data.get("outbound_trunk_id")
             google_key_override = data.get("google_api_key")
             sip_domain_override = data.get("vobiz_sip_domain")
+            if data.get("inbound") or data.get("direction") == "inbound":
+                is_inbound = True
             if google_key_override:
                 os.environ["GOOGLE_API_KEY"] = google_key_override
             if sip_domain_override:
@@ -185,20 +192,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except (json.JSONDecodeError, AttributeError):
             await _log("warning", "Invalid JSON in job metadata")
 
-    await _log("info", f"Call job received — call_id={call_id} phone={phone_number} lead={lead_name} biz={business_name}")
+    if not phone_number or ctx.room.name.startswith("inbound"):
+        is_inbound = True
 
-    system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
-                                  service_type=service_type, custom_prompt=custom_prompt)
-    tool_ctx = AppointmentTools(ctx, phone_number, lead_name)
-    tool_ctx.call_id = call_id
-    tool_ctx.campaign_id = campaign_id
-    tool_ctx.campaign_name = campaign_name
-    tool_ctx.broker_phone = broker_phone
-    tool_ctx.business_name = business_name
-    tool_ctx.service_type = service_type
-    tool_ctx.property_type = property_type
-    tool_ctx.budget = budget
-    tool_ctx.location = location
+    if not call_id:
+        call_id = str(uuid.uuid4())
+
+    await ctx.connect()
+    await _log("info", f"Connected to LiveKit room: {ctx.room.name} (mode: {'INBOUND' if is_inbound else 'OUTBOUND'})")
 
     if voice_override:
         os.environ["GEMINI_TTS_VOICE"] = voice_override
@@ -213,30 +214,163 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     else:
         enabled_tools = await get_enabled_tools()
 
-    # ── Connect to LiveKit Room ──────────────────────────────────────────────
-    await ctx.connect()
-    await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
-
-    # ── Build and start AI session ───────────────────────────────────────────
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
-    await _log("info", f"Starting AI session — model={gemini_model}")
-    active_tools = tool_ctx.build_tool_list(enabled_tools)
-    session = _build_session(tools=active_tools, system_prompt=system_prompt)
-
-    # Standard clean telephony audio (no heavy CPU neural buffering filter)
-    _session_kwargs = dict(
-        room=ctx.room,
-        agent=OutboundAssistant(instructions=system_prompt),
-    )
-
-    await session.start(**_session_kwargs)
-    await _log("info", "Agent session active in room")
+    tool_ctx = AppointmentTools(ctx, phone_number, lead_name)
+    tool_ctx.call_id = call_id
 
     call_start_time = None
 
-    # ── CRITICAL: ENTIRE CALL WRAPPED IN TRY...FINALLY ───────────────────────
     try:
-        if phone_number:
+        if is_inbound:
+            remote_p = None
+            for _ in range(25):
+                for p in ctx.room.remote_participants.values():
+                    remote_p = p
+                    break
+                if remote_p:
+                    break
+                await asyncio.sleep(0.4)
+
+            caller_phone = "unknown"
+            if remote_p:
+                caller_phone = remote_p.identity.replace("sip_", "").strip()
+            if caller_phone == "unknown" and "inbound-call-" in ctx.room.name:
+                caller_phone = ctx.room.name.replace("inbound-call-", "").replace("inbound-", "").strip()
+
+            phone_number = caller_phone
+            await _log("info", f"Inbound call received from {caller_phone}")
+
+            caller_info = await lookup_inbound_caller(caller_phone)
+            lead_name = caller_info.get("lead_name") or "there"
+            business_name = caller_info.get("business_name") or "Kaamdhenu Real Estate"
+            service_type = caller_info.get("service_type") or "real estate services"
+            property_type = caller_info.get("property_type")
+            budget = caller_info.get("budget")
+            location = caller_info.get("location")
+            campaign_id = caller_info.get("campaign_id")
+            broker_phone = caller_info.get("broker_phone")
+
+            tool_ctx.phone_number = phone_number
+            tool_ctx.lead_name = lead_name
+            tool_ctx.campaign_id = campaign_id
+            tool_ctx.campaign_name = caller_info.get("campaign_name")
+            tool_ctx.broker_phone = broker_phone
+            tool_ctx.business_name = business_name
+            tool_ctx.service_type = service_type
+            tool_ctx.property_type = property_type
+            tool_ctx.budget = budget
+            tool_ctx.location = location
+
+            asyncio.create_task(start_call_log(
+                call_id=call_id,
+                phone_number=phone_number,
+                lead_name=lead_name,
+                service_type=service_type,
+                property_type=property_type,
+                budget=budget,
+                location=location,
+                notes="Inbound Call" if not caller_info.get("found") else f"Inbound Callback (Previous outcome: {caller_info.get('last_outcome')})",
+                campaign_id=campaign_id,
+            ))
+
+            if caller_info.get("found") and lead_name != "there":
+                inbound_context = (
+                    f"\n\n[INBOUND CALLBACK CONTEXT]\n"
+                    f"This is an INBOUND callback from {lead_name} ({phone_number}). "
+                    f"They previously interacted with us regarding {service_type}. "
+                    f"Warmly acknowledge that they called back and assist them with their inquiry."
+                )
+            else:
+                inbound_context = (
+                    f"\n\n[INBOUND RECEPTIONIST CONTEXT]\n"
+                    f"This is an INBOUND call from a new prospective client ({phone_number}). "
+                    f"Professionally greet them as the AI Receptionist for {business_name} and qualify their real estate inquiry."
+                )
+
+            effective_prompt = (caller_info.get("custom_prompt") or custom_prompt or "") + inbound_context
+            system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
+                                         service_type=service_type, custom_prompt=effective_prompt)
+
+            if caller_info.get("found") and lead_name != "there":
+                greeting = f"Hello {lead_name}! Thank you for calling back {business_name}. I believe you were looking for information on our {service_type or 'properties'}. How can I assist you today?"
+            else:
+                greeting = f"Hello! Thank you for calling {business_name}. I am Priya, your AI property assistant. How may I help you today?"
+
+            active_tools = tool_ctx.build_tool_list(enabled_tools)
+            session = _build_session(tools=active_tools, system_prompt=system_prompt)
+            _session_kwargs = dict(
+                room=ctx.room,
+                agent=OutboundAssistant(instructions=system_prompt),
+            )
+            await session.start(**_session_kwargs)
+            call_start_time = time.time()
+            tool_ctx._call_start_time = call_start_time
+
+            _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
+            _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
+            if "supabase.co/storage/v1/s3" in _s3_ep:
+                _public_ep = _s3_ep.replace("/storage/v1/s3", "/storage/v1/object/public")
+                tool_ctx.recording_url = f"{_public_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+            elif _s3_ep:
+                tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
+
+            try:
+                await session.generate_reply(instructions=greeting)
+                await _log("info", f"Inbound greeting spoken to {phone_number}")
+            except Exception as _gr_exc:
+                await _log("warning", f"Inbound greeting notice: {_gr_exc}")
+
+            async def _start_recording_bg():
+                _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
+                _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
+                _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
+                if _aws_key and _aws_secret and _aws_bucket:
+                    try:
+                        _recording_path = f"recordings/{ctx.room.name}.ogg"
+                        _egress_req = api.RoomCompositeEgressRequest(
+                            room_name=ctx.room.name, audio_only=True,
+                            file_outputs=[api.EncodedFileOutput(
+                                file_type=api.EncodedFileType.OGG, filepath=_recording_path,
+                                s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
+                                                bucket=_aws_bucket, region=_s3_region, endpoint=_s3_ep),
+                            )],
+                        )
+                        _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
+                        await _log("info", f"Recording egress started: {_egress.egress_id}")
+                    except Exception as _exc:
+                        await _log("warning", f"Recording start notice: {_exc}")
+
+            asyncio.create_task(_start_recording_bg())
+
+            while ctx.room.isconnected():
+                await asyncio.sleep(1.0)
+                if len(ctx.room.remote_participants) == 0:
+                    await asyncio.sleep(1.0)
+                    if len(ctx.room.remote_participants) == 0 or not ctx.room.isconnected():
+                        await _log("info", "Inbound caller hung up (0 remote participants remaining)")
+                        break
+
+        else:
+            tool_ctx.phone_number = phone_number
+            tool_ctx.lead_name = lead_name
+            tool_ctx.campaign_id = campaign_id
+            tool_ctx.campaign_name = campaign_name
+            tool_ctx.broker_phone = broker_phone
+            tool_ctx.business_name = business_name
+            tool_ctx.service_type = service_type
+            tool_ctx.property_type = property_type
+            tool_ctx.budget = budget
+            tool_ctx.location = location
+
+            system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
+                                          service_type=service_type, custom_prompt=custom_prompt)
+            active_tools = tool_ctx.build_tool_list(enabled_tools)
+            session = _build_session(tools=active_tools, system_prompt=system_prompt)
+            _session_kwargs = dict(
+                room=ctx.room,
+                agent=OutboundAssistant(instructions=system_prompt),
+            )
+            await session.start(**_session_kwargs)
+
             trunk_id = (
                 (trunk_id_override if trunk_id_override and trunk_id_override.startswith("ST_") else "") or
                 (os.getenv("OUTBOUND_TRUNK_ID", "").strip() if os.getenv("OUTBOUND_TRUNK_ID", "").strip().startswith("ST_") else "") or
@@ -245,7 +379,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ).strip()
 
             if not trunk_id:
-                err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create SIP Trunk' in Settings."
+                err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create Outbound SIP Trunk' in Settings."
                 await _log("error", err_msg)
                 tool_ctx.outcome = "failed"
                 tool_ctx.end_reason = err_msg
@@ -274,7 +408,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 tool_ctx.end_reason = err_msg
                 return
 
-            # Compute S3/recording URLs
             _s3_ep = (os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")).rstrip("/")
             _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "call-recordings")
             if "supabase.co/storage/v1/s3" in _s3_ep:
@@ -283,15 +416,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             elif _s3_ep:
                 tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/recordings/{ctx.room.name}.ogg"
 
-            # Fast Direct Greeting
             greeting = f"Hi {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?"
             try:
                 await session.generate_reply(instructions=greeting)
-                await _log("info", f"Greeting spoken to {phone_number}")
             except Exception as _gr_exc:
                 await _log("warning", f"Greeting notice: {_gr_exc}")
 
-            # Non-blocking background recording
             async def _start_recording_bg():
                 _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
                 _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
@@ -314,23 +444,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
             asyncio.create_task(_start_recording_bg())
 
-            # ── Active Call Loop — Wait until user or agent disconnects ────────
             while ctx.room.isconnected():
                 await asyncio.sleep(1.0)
-                # When customer hangs up, remote_participants becomes empty
                 if len(ctx.room.remote_participants) == 0:
-                    # Give 1 second confirmation to prevent false alarm
                     await asyncio.sleep(1.0)
                     if len(ctx.room.remote_participants) == 0 or not ctx.room.isconnected():
                         await _log("info", "Customer hung up (0 remote participants remaining)")
                         break
-        else:
-            # Inbound / fallback: wait until disconnected
-            while ctx.room.isconnected():
-                await asyncio.sleep(1.0)
 
     finally:
-        # ── GUARANTEED FINALIZATION IN FINALLY BLOCK ──────────────────────────
         final_dur = max(1, int(time.time() - (call_start_time or time.time()))) if call_start_time else 0
         final_outcome = tool_ctx.outcome or ("completed" if call_start_time else "failed")
         final_reason = tool_ctx.end_reason or ("Call completed normally" if call_start_time else "Call ended before answer")

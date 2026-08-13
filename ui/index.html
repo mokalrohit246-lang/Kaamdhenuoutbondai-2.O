@@ -876,15 +876,18 @@ tr:last-child td { border-bottom: none; }
 
       <!-- Vobiz SIP -->
       <div class="card">
-        <h3>Vobiz SIP <span id="badge-sip" class="badge badge-configured" style="display:none">Configured</span></h3>
+        <h3>Vobiz SIP (Inbound & Outbound) <span id="badge-sip" class="badge badge-configured" style="display:none">Configured</span></h3>
         <div class="form-group"><label>Domain</label><input type="text" id="set-sip-domain"></div>
         <div class="form-group"><label>Username</label><input type="text" id="set-sip-user"></div>
         <div class="form-group"><label>Password</label><div class="input-with-icon"><input type="password" id="set-sip-pwd"><span class="toggle-pwd" onclick="togglePwd('set-sip-pwd')">👁</span></div></div>
-        <div class="form-group"><label>Outbound Number</label><input type="text" id="set-sip-out"></div>
-        <div class="form-group"><label>Trunk ID</label><input type="text" id="set-sip-trunk"></div>
-        <div class="flex gap-2">
-          <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk'])">Save SIP</button>
-          <button class="btn btn-sm btn-danger" onclick="createSIPTrunk()">⚡ Create SIP Trunk</button>
+        <div class="form-group"><label>Vobiz Number</label><input type="text" id="set-sip-out" placeholder="+91..."></div>
+        <div class="form-group"><label>Outbound Trunk ID</label><input type="text" id="set-sip-trunk" placeholder="ST_..."></div>
+        <div class="form-group"><label>Inbound Trunk ID</label><input type="text" id="set-sip-inbound-trunk" placeholder="ST_..."></div>
+        <div class="form-group"><label>Inbound Dispatch Rule ID</label><input type="text" id="set-sip-dispatch-rule" placeholder="SDR_..."></div>
+        <div class="flex gap-2 flex-wrap" style="margin-top:0.5rem;">
+          <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule'])">Save SIP</button>
+          <button class="btn btn-sm btn-danger" onclick="createSIPTrunk()">⚡ Create Outbound Trunk</button>
+          <button class="btn btn-sm btn-accent" id="btn-create-inbound-trunk" onclick="createInboundSIPTrunk()">⚡ Create Inbound SIP Trunk & Rule</button>
         </div>
       </div>
 
@@ -1701,6 +1704,8 @@ const SETTINGS_MAP = {
   'set-sip-pwd':'VOBIZ_PASSWORD',
   'set-sip-out':'VOBIZ_OUTBOUND_NUMBER',
   'set-sip-trunk':'OUTBOUND_TRUNK_ID',
+  'set-sip-inbound-trunk':'INBOUND_TRUNK_ID',
+  'set-sip-dispatch-rule':'INBOUND_DISPATCH_RULE_ID',
   'set-transfer':'DEFAULT_TRANSFER_NUMBER',
   'set-tw-sid':'TWILIO_ACCOUNT_SID',
   'set-tw-tok':'TWILIO_AUTH_TOKEN',
@@ -1783,15 +1788,35 @@ window.saveSettingsGroup = async (group, formIds) => {
 };
 window.createSIPTrunk = async () => {
   try {
-    toast('Creating LiveKit SIP Trunk...', 'info');
+    toast('Creating Outbound LiveKit SIP Trunk...', 'info');
     const res = await apiPost('/api/setup/trunk');
-    toast('SIP Trunk created successfully: ' + (res.trunk_id || ''), 'ok');
+    toast('Outbound SIP Trunk created: ' + (res.trunk_id || ''), 'ok');
     if ($('set-sip-trunk') && res.trunk_id) {
       $('set-sip-trunk').value = res.trunk_id;
     }
     loadSettings();
   } catch(e) {
-    toast('Failed to create SIP Trunk: ' + (e.message || e), 'err');
+    toast('Failed to create Outbound SIP Trunk: ' + (e.message || e), 'err');
+  }
+};
+window.createInboundSIPTrunk = async () => {
+  const btn = $('btn-create-inbound-trunk');
+  if (btn) { btn.disabled = true; btn.innerText = 'Creating Inbound Trunk & Rule...'; }
+  try {
+    toast('Creating Inbound SIP Trunk & Dispatch Rule...', 'info');
+    const res = await apiPost('/api/setup/inbound-trunk', {});
+    toast(`Inbound Trunk created: ${res.trunk_id || ''} | Rule: ${res.dispatch_rule_id || ''}`, 'ok');
+    if ($('set-sip-inbound-trunk') && res.trunk_id) {
+      $('set-sip-inbound-trunk').value = res.trunk_id;
+    }
+    if ($('set-sip-dispatch-rule') && res.dispatch_rule_id) {
+      $('set-sip-dispatch-rule').value = res.dispatch_rule_id;
+    }
+    loadSettings();
+  } catch(e) {
+    toast('Failed to create Inbound SIP Trunk: ' + (e.message || e), 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = '⚡ Create Inbound SIP Trunk & Rule'; }
   }
 };
 window.saveToolToggles = async () => {

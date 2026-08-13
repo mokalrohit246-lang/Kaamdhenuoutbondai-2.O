@@ -405,10 +405,78 @@ async def api_setup_trunk():
         os.environ["OUTBOUND_TRUNK_ID"] = trunk_id
         await lk.aclose()
         await session.close()
-        await log_error("server", f"Created LiveKit SIP Trunk: {trunk_id}", f"domain={sip_domain}", "info")
+        await log_error("server", f"Created LiveKit SIP Outbound Trunk: {trunk_id}", f"domain={sip_domain}", "info")
         return {"status": "created", "trunk_id": trunk_id}
     except Exception as exc:
         raise HTTPException(500, f"Trunk creation failed: {exc}")
+
+
+@app.post("/api/setup/inbound-trunk")
+async def api_create_inbound_sip_trunk():
+    url        = await eff("LIVEKIT_URL")
+    key        = await eff("LIVEKIT_API_KEY")
+    secret     = await eff("LIVEKIT_API_SECRET")
+    phone      = await eff("VOBIZ_OUTBOUND_NUMBER")
+    username   = await eff("VOBIZ_USERNAME")
+    password   = await eff("VOBIZ_PASSWORD")
+
+    if not all([url, key, secret, phone]):
+        raise HTTPException(400, "Configure LiveKit URL, API Key, Secret, and Vobiz Number in Settings first.")
+
+    try:
+        from livekit import api as lk_api
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+        lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+
+        # 1. Create Inbound SIP Trunk
+        trunk_kwargs = {
+            "name": "Vobiz Inbound Trunk",
+            "numbers": [phone],
+        }
+        if username and password:
+            trunk_kwargs["auth_username"] = username
+            trunk_kwargs["auth_password"] = password
+
+        inbound_trunk = await lk.sip.create_sip_inbound_trunk(
+            lk_api.CreateSIPInboundTrunkRequest(
+                trunk=lk_api.SIPInboundTrunkInfo(**trunk_kwargs)
+            )
+        )
+        trunk_id = inbound_trunk.sip_trunk_id
+        await set_setting("INBOUND_TRUNK_ID", trunk_id)
+        os.environ["INBOUND_TRUNK_ID"] = trunk_id
+
+        # 2. Create SIP Dispatch Rule to route incoming calls to rooms prefixed with 'inbound-'
+        rule_req = lk_api.CreateSIPDispatchRuleRequest(
+            name="Inbound AI Receptionist Rule",
+            trunk_ids=[trunk_id],
+            rule=lk_api.SIPDispatchRule(
+                dispatch_rule_direct=lk_api.SIPDispatchRuleDirect(
+                    room_name="inbound-call-{caller_identity}",
+                    pin="",
+                )
+            )
+        )
+        dispatch_rule = await lk.sip.create_sip_dispatch_rule(rule_req)
+        rule_id = dispatch_rule.sip_dispatch_rule_id
+        await set_setting("INBOUND_DISPATCH_RULE_ID", rule_id)
+        os.environ["INBOUND_DISPATCH_RULE_ID"] = rule_id
+
+        await lk.aclose()
+        await session.close()
+        await log_error("server", f"Created LiveKit SIP Inbound Trunk: {trunk_id} & Rule: {rule_id}", f"phone={phone}", "info")
+        return {
+            "status": "created",
+            "trunk_id": trunk_id,
+            "dispatch_rule_id": rule_id,
+            "phone": phone,
+        }
+    except Exception as exc:
+        logger.error("Inbound trunk creation error: %s", exc)
+        raise HTTPException(500, f"Inbound trunk setup failed: {exc}")
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
