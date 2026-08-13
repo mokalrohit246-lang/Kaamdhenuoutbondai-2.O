@@ -399,6 +399,7 @@ async def start_call_log(
     service_type: Optional[str] = None, property_type: Optional[str] = None,
     budget: Optional[str] = None, location: Optional[str] = None,
     notes: Optional[str] = None, campaign_id: Optional[str] = None,
+    call_direction: str = "outbound", called_to: Optional[str] = None,
 ) -> bool:
     """Insert initial call log record when call is initiated/dispatched."""
     try:
@@ -411,8 +412,11 @@ async def start_call_log(
             "reason": "Call dispatched to LiveKit",
             "duration_seconds": 0,
             "call_cost": 0.0,
+            "call_direction": call_direction,
             "timestamp": datetime.now().isoformat(),
         }
+        if called_to:
+            row["called_to"] = called_to
         if property_type or service_type:
             row["property_type"] = property_type or service_type
         if budget:
@@ -425,7 +429,7 @@ async def start_call_log(
             row["campaign_id"] = campaign_id
 
         await _safe_upsert_call_log(db, row)
-        logger.info("start_call_log: id=%s phone=%s lead=%s", call_id, phone_number, lead_name)
+        logger.info("start_call_log: id=%s phone=%s lead=%s dir=%s", call_id, phone_number, lead_name, call_direction)
         return True
     except Exception as exc:
         logger.error("Could not insert start_call_log for %s: %s", call_id, exc)
@@ -443,6 +447,7 @@ async def complete_call_log(
     lead_status: Optional[str] = None, campaign_id: Optional[str] = None,
     transcript: Optional[str] = None,
     phone_number: Optional[str] = None, lead_name: Optional[str] = None,
+    call_direction: Optional[str] = None, called_to: Optional[str] = None,
 ) -> bool:
     """Finalize call log using UPSERT (INSERT ON CONFLICT UPDATE).
     This guarantees the row is created or updated regardless of prior state.
@@ -461,6 +466,10 @@ async def complete_call_log(
             "call_cost": calc_cost,
             "timestamp": datetime.now().isoformat(),
         }
+        if call_direction is not None:
+            row["call_direction"] = call_direction
+        if called_to is not None:
+            row["called_to"] = called_to
         if reason is not None:
             row["reason"] = reason
         if recording_url is not None:
@@ -516,7 +525,7 @@ async def log_call(
     lead_status: Optional[str] = None, campaign_id: Optional[str] = None,
     call_id: Optional[str] = None, property_type: Optional[str] = None,
     budget: Optional[str] = None, location: Optional[str] = None,
-    transcript: Optional[str] = None,
+    transcript: Optional[str] = None, call_direction: str = "outbound", called_to: Optional[str] = None,
 ) -> None:
     try:
         db = await _adb()
@@ -525,8 +534,11 @@ async def log_call(
         row: dict = {
             "id": cid, "phone_number": phone_number, "lead_name": lead_name,
             "outcome": outcome, "reason": reason, "duration_seconds": duration_seconds,
+            "call_direction": call_direction,
             "timestamp": datetime.now().isoformat(),
         }
+        if called_to:
+            row["called_to"] = called_to
         if recording_url:
             row["recording_url"] = recording_url
         if notes:
@@ -554,11 +566,14 @@ async def log_call(
         logger.warning("Could not log call: %s", exc)
 
 
-async def get_all_calls(page: int = 1, limit: int = 20) -> list:
+async def get_all_calls(page: int = 1, limit: int = 20, direction: Optional[str] = None) -> list:
     try:
         db = await _adb()
         offset = (page - 1) * limit
-        result = await db.table("call_logs").select("*").order("timestamp", desc=True).range(offset, offset + limit - 1).execute()
+        q = db.table("call_logs").select("*")
+        if direction:
+            q = q.eq("call_direction", direction)
+        result = await q.order("timestamp", desc=True).range(offset, offset + limit - 1).execute()
         return result.data or []
     except Exception as exc:
         logger.warning("Could not get calls: %s", exc)
@@ -611,18 +626,48 @@ async def get_contacts() -> list:
         return []
 
 
-async def lookup_inbound_caller(caller_phone: str) -> dict:
-    """
-    Lookup caller in call_logs and campaigns to retrieve context for an inbound callback.
-    Matches phone with or without country code.
-    """
+# ── Inbound Clients (Multi-Tenant Omnichannel) ───────────────────────────────
+
+async def create_inbound_client(
+    client_name: str, phone_number: str,
+    system_prompt: Optional[str] = None, agent_voice: str = "Aoede",
+    business_name: Optional[str] = None, service_type: str = "Real Estate Services",
+    livekit_trunk_id: Optional[str] = None, livekit_dispatch_rule_id: Optional[str] = None,
+) -> str:
+    db = await _adb()
+    cid = str(uuid.uuid4())
+    row = {
+        "id": cid,
+        "client_name": client_name.strip(),
+        "phone_number": phone_number.strip(),
+        "system_prompt": system_prompt,
+        "agent_voice": agent_voice or "Aoede",
+        "business_name": business_name or client_name.strip(),
+        "service_type": service_type or "Real Estate Services",
+        "livekit_trunk_id": livekit_trunk_id,
+        "livekit_dispatch_rule_id": livekit_dispatch_rule_id,
+        "created_at": datetime.now().isoformat(),
+    }
+    await db.table("inbound_clients").upsert(row, on_conflict="id").execute()
+    return cid
+
+
+async def get_all_inbound_clients() -> list:
     try:
         db = await _adb()
-        clean = (caller_phone or "").strip().replace(" ", "").replace("-", "")
-        if not clean:
-            return {"found": False, "phone_number": "", "lead_name": "there", "business_name": "Kaamdhenu Real Estate", "service_type": "real estate services"}
+        res = await db.table("inbound_clients").select("*").order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as exc:
+        logger.warning("Could not get inbound_clients: %s", exc)
+        return []
 
-        # Search candidates: exact, with +, without +, last 10 digits
+
+async def get_inbound_client_by_phone(phone_number: str) -> Optional[dict]:
+    try:
+        db = await _adb()
+        clean = (phone_number or "").strip().replace(" ", "").replace("-", "")
+        if not clean:
+            return None
         candidates = [clean]
         if not clean.startswith("+"):
             candidates.append(f"+{clean}")
@@ -633,18 +678,65 @@ async def lookup_inbound_caller(caller_phone: str) -> dict:
             if clean.startswith("+91") and len(clean) == 13:
                 candidates.append(clean[3:])
 
-        rows = []
         for cand in candidates:
+            res = await db.table("inbound_clients").select("*").eq("phone_number", cand).limit(1).execute()
+            if res.data:
+                return res.data[0]
+        return None
+    except Exception as exc:
+        logger.warning("Error fetching inbound client by phone %s: %s", phone_number, exc)
+        return None
+
+
+async def delete_inbound_client(client_id: str) -> bool:
+    try:
+        db = await _adb()
+        res = await db.table("inbound_clients").delete().eq("id", client_id).execute()
+        return len(res.data or []) > 0
+    except Exception as exc:
+        logger.warning("Could not delete inbound_client %s: %s", client_id, exc)
+        return False
+
+
+async def lookup_inbound_caller(caller_phone: str, called_to: Optional[str] = None) -> dict:
+    """
+    Dual-Routing Inbound Lookup:
+    Condition A (Missed Call Return): If called_to matches Global Outbound Number, retrieves campaign context.
+    Condition B (Client-Specific Direct Call): If called_to matches an inbound client, adopts client persona.
+    """
+    try:
+        db = await _adb()
+        clean_caller = (caller_phone or "").strip().replace(" ", "").replace("-", "")
+        clean_called = (called_to or "").strip().replace(" ", "").replace("-", "") if called_to else ""
+
+        # Step 1: Check Condition B — Client-Specific Direct Inbound
+        client_record = None
+        if clean_called:
+            client_record = await get_inbound_client_by_phone(clean_called)
+
+        # Step 2: Search caller history in call_logs (matches phone with/without +)
+        caller_candidates = [clean_caller]
+        if not clean_caller.startswith("+"):
+            caller_candidates.append(f"+{clean_caller}")
+            if len(clean_caller) == 10:
+                caller_candidates.append(f"+91{clean_caller}")
+        else:
+            caller_candidates.append(clean_caller[1:])
+            if clean_caller.startswith("+91") and len(clean_caller) == 13:
+                caller_candidates.append(clean_caller[3:])
+
+        rows = []
+        for cand in caller_candidates:
             res = await db.table("call_logs").select("*").eq("phone_number", cand).order("timestamp", desc=True).limit(5).execute()
             if res.data:
                 rows = res.data
                 break
 
-        found = len(rows) > 0
+        found_in_history = len(rows) > 0
         lead_name = None
         campaign_id = None
         campaign_name = None
-        service_type = "real estate services"
+        service_type = None
         property_type = None
         budget = None
         location = None
@@ -654,11 +746,11 @@ async def lookup_inbound_caller(caller_phone: str) -> dict:
         last_outcome = None
         last_call_time = None
 
-        if found:
+        if found_in_history:
             latest = rows[0]
             lead_name = latest.get("lead_name")
             campaign_id = latest.get("campaign_id")
-            service_type = latest.get("property_type") or latest.get("service_type") or "real estate services"
+            service_type = latest.get("property_type") or latest.get("service_type")
             property_type = latest.get("property_type")
             budget = latest.get("budget")
             location = latest.get("location")
@@ -677,41 +769,73 @@ async def lookup_inbound_caller(caller_phone: str) -> dict:
                 except Exception as _ce:
                     logger.warning("Campaign lookup in inbound helper: %s", _ce)
 
-        biz_name = await get_setting("BUSINESS_NAME", "Kaamdhenu Real Estate") or "Kaamdhenu Real Estate"
+        # Apply Condition B if client matched
+        if client_record:
+            return {
+                "routing_type": "client_specific",
+                "found": found_in_history,
+                "phone_number": clean_caller,
+                "called_to": clean_called,
+                "client_name": client_record.get("client_name"),
+                "business_name": client_record.get("business_name") or client_record.get("client_name"),
+                "service_type": client_record.get("service_type") or "Real Estate Services",
+                "property_type": property_type,
+                "budget": budget,
+                "location": location,
+                "notes": notes,
+                "lead_name": lead_name or "there",
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_name,
+                "broker_phone": broker_phone,
+                "custom_prompt": client_record.get("system_prompt") or custom_prompt,
+                "agent_voice": client_record.get("agent_voice", "Aoede"),
+                "last_outcome": last_outcome,
+                "last_call_time": last_call_time,
+            }
 
+        # Otherwise Condition A (Missed Call Return or Global Inbound)
+        biz_name = await get_setting("BUSINESS_NAME", "Kaamdhenu Real Estate") or "Kaamdhenu Real Estate"
         return {
-            "found": found,
-            "phone_number": clean,
-            "lead_name": lead_name or "there",
+            "routing_type": "missed_call_return" if found_in_history else "global_receptionist",
+            "found": found_in_history,
+            "phone_number": clean_caller,
+            "called_to": clean_called,
+            "client_name": biz_name,
             "business_name": biz_name,
-            "service_type": service_type,
+            "service_type": service_type or "Real Estate Services",
             "property_type": property_type,
             "budget": budget,
             "location": location,
             "notes": notes,
+            "lead_name": lead_name or "there",
             "campaign_id": campaign_id,
             "campaign_name": campaign_name,
             "broker_phone": broker_phone,
             "custom_prompt": custom_prompt,
+            "agent_voice": "Aoede",
             "last_outcome": last_outcome,
             "last_call_time": last_call_time,
         }
     except Exception as exc:
-        logger.error("lookup_inbound_caller error for %s: %s", caller_phone, exc)
+        logger.error("lookup_inbound_caller error for %s -> %s: %s", caller_phone, called_to, exc)
         return {
+            "routing_type": "global_receptionist",
             "found": False,
             "phone_number": caller_phone,
-            "lead_name": "there",
+            "called_to": called_to,
+            "client_name": "Kaamdhenu Real Estate",
             "business_name": "Kaamdhenu Real Estate",
-            "service_type": "real estate services",
+            "service_type": "Real Estate Services",
             "property_type": None,
             "budget": None,
             "location": None,
             "notes": None,
+            "lead_name": "there",
             "campaign_id": None,
             "campaign_name": None,
             "broker_phone": None,
             "custom_prompt": None,
+            "agent_voice": "Aoede",
             "last_outcome": None,
             "last_call_time": None,
         }

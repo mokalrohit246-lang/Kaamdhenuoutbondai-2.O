@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS call_logs (
     budget TEXT,
     location TEXT,
     transcript TEXT,
+    call_direction TEXT DEFAULT 'outbound',
+    called_to TEXT,
     timestamp TEXT NOT NULL
 );
 ALTER TABLE call_logs DISABLE ROW LEVEL SECURITY;
@@ -49,9 +51,12 @@ ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS property_type TEXT;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS budget TEXT;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS location TEXT;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS transcript TEXT;
+ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS call_direction TEXT DEFAULT 'outbound';
+ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS called_to TEXT;
 CREATE INDEX IF NOT EXISTS idx_call_logs_phone ON call_logs (phone_number);
 CREATE INDEX IF NOT EXISTS idx_call_logs_timestamp ON call_logs (timestamp);
 CREATE INDEX IF NOT EXISTS idx_call_logs_campaign ON call_logs (campaign_id);
+CREATE INDEX IF NOT EXISTS idx_call_logs_direction ON call_logs (call_direction);
 
 -- 3. Settings Key-Value Store (With Virtual Wallet Defaults)
 CREATE TABLE IF NOT EXISTS settings (
@@ -146,4 +151,27 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_lead ON whatsapp_logs (lead_phone);
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('call-recordings', 'call-recordings', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- 10. Inbound Clients Table (Multi-Tenant Omnichannel)
+CREATE TABLE IF NOT EXISTS inbound_clients (
+    id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    phone_number TEXT NOT NULL,
+    system_prompt TEXT,
+    agent_voice TEXT DEFAULT 'Aoede',
+    business_name TEXT,
+    service_type TEXT DEFAULT 'Real Estate Services',
+    livekit_trunk_id TEXT,
+    livekit_dispatch_rule_id TEXT,
+    created_at TEXT NOT NULL
+);
+ALTER TABLE inbound_clients DISABLE ROW LEVEL SECURITY;
+ALTER TABLE inbound_clients ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+ALTER TABLE inbound_clients ADD COLUMN IF NOT EXISTS agent_voice TEXT DEFAULT 'Aoede';
+ALTER TABLE inbound_clients ADD COLUMN IF NOT EXISTS business_name TEXT;
+ALTER TABLE inbound_clients ADD COLUMN IF NOT EXISTS service_type TEXT DEFAULT 'Real Estate Services';
+ALTER TABLE inbound_clients ADD COLUMN IF NOT EXISTS livekit_trunk_id TEXT;
+ALTER TABLE inbound_clients ADD COLUMN IF NOT EXISTS livekit_dispatch_rule_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_inbound_clients_phone ON inbound_clients (phone_number);
+
 

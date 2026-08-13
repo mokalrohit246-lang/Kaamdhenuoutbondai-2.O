@@ -37,6 +37,7 @@ from db import (
     add_campaign_minutes, check_campaign_budget, get_whatsapp_logs,
     insert_initial_call, update_call_status, add_contact_memory,
     get_wallet, topup_wallet,
+    create_inbound_client, get_all_inbound_clients, get_inbound_client_by_phone, delete_inbound_client,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -156,6 +157,15 @@ class StatusRequest(BaseModel):
 
 class TopupRequest(BaseModel):
     amount: float
+
+
+class InboundClientRequest(BaseModel):
+    client_name: str
+    phone_number: str
+    system_prompt: Optional[str] = None
+    agent_voice: Optional[str] = "Aoede"
+    business_name: Optional[str] = None
+    service_type: Optional[str] = "Real Estate Services"
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -283,8 +293,8 @@ async def api_dispatch_call(req: CallRequest):
 # ── Calls ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/calls")
-async def api_get_calls(page: int = 1, limit: int = 20):
-    return await get_all_calls(page=page, limit=limit)
+async def api_get_calls(page: int = 1, limit: int = 20, direction: Optional[str] = None):
+    return await get_all_calls(page=page, limit=limit, direction=direction)
 
 
 @app.patch("/api/calls/{call_id}/notes")
@@ -502,6 +512,132 @@ async def api_get_contacts():
 @app.get("/api/crm/calls")
 async def api_get_contact_calls(phone: str = Query(...)):
     return {"data": await get_calls_by_phone(phone)}
+
+
+# ── Inbound Clients (Multi-Tenant Omnichannel) ───────────────────────────────
+
+@app.get("/api/inbound-clients")
+async def api_get_inbound_clients():
+    return await get_all_inbound_clients()
+
+
+@app.post("/api/inbound-clients")
+async def api_create_inbound_client(req: InboundClientRequest):
+    if not req.client_name or not req.phone_number:
+        raise HTTPException(400, "client_name and phone_number are required")
+
+    url        = await eff("LIVEKIT_URL")
+    key        = await eff("LIVEKIT_API_KEY")
+    secret     = await eff("LIVEKIT_API_SECRET")
+    username   = await eff("VOBIZ_USERNAME")
+    password   = await eff("VOBIZ_PASSWORD")
+
+    trunk_id = None
+    rule_id = None
+
+    # Dynamically create SIPInboundTrunk & SIPDispatchRule in LiveKit if configured
+    if url and key and secret:
+        try:
+            from livekit import api as lk_api
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+            lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+
+            trunk_kwargs = {
+                "name": f"Inbound Trunk - {req.client_name}",
+                "numbers": [req.phone_number.strip()],
+            }
+            if username and password:
+                trunk_kwargs["auth_username"] = username
+                trunk_kwargs["auth_password"] = password
+
+            inbound_trunk = await lk.sip.create_sip_inbound_trunk(
+                lk_api.CreateSIPInboundTrunkRequest(
+                    trunk=lk_api.SIPInboundTrunkInfo(**trunk_kwargs)
+                )
+            )
+            trunk_id = inbound_trunk.sip_trunk_id
+
+            rule_req = lk_api.CreateSIPDispatchRuleRequest(
+                name=f"Inbound Dispatch - {req.client_name}",
+                trunk_ids=[trunk_id],
+                rule=lk_api.SIPDispatchRule(
+                    dispatch_rule_direct=lk_api.SIPDispatchRuleDirect(
+                        room_name="inbound-call-{caller_identity}",
+                        pin="",
+                    )
+                )
+            )
+            dispatch_rule = await lk.sip.create_sip_dispatch_rule(rule_req)
+            rule_id = dispatch_rule.sip_dispatch_rule_id
+
+            await lk.aclose()
+            await session.close()
+            await log_error("server", f"Created Inbound Client Trunk: {trunk_id} & Rule: {rule_id}", f"client={req.client_name} phone={req.phone_number}", "info")
+        except Exception as lk_exc:
+            logger.warning("LiveKit SIP Trunk notice for client %s: %s", req.client_name, lk_exc)
+
+    client_id = await create_inbound_client(
+        client_name=req.client_name,
+        phone_number=req.phone_number,
+        system_prompt=req.system_prompt,
+        agent_voice=req.agent_voice or "Aoede",
+        business_name=req.business_name,
+        service_type=req.service_type or "Real Estate Services",
+        livekit_trunk_id=trunk_id,
+        livekit_dispatch_rule_id=rule_id,
+    )
+
+    return {
+        "status": "created",
+        "id": client_id,
+        "client_name": req.client_name,
+        "phone_number": req.phone_number,
+        "livekit_trunk_id": trunk_id,
+        "livekit_dispatch_rule_id": rule_id,
+    }
+
+
+@app.delete("/api/inbound-clients/{client_id}")
+async def api_delete_inbound_client(client_id: str):
+    try:
+        clients = await get_all_inbound_clients()
+        target = next((c for c in clients if c.get("id") == client_id), None)
+        if target:
+            url    = await eff("LIVEKIT_URL")
+            key    = await eff("LIVEKIT_API_KEY")
+            secret = await eff("LIVEKIT_API_SECRET")
+            if url and key and secret and (target.get("livekit_trunk_id") or target.get("livekit_dispatch_rule_id")):
+                try:
+                    from livekit import api as lk_api
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+                    lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+                    if target.get("livekit_dispatch_rule_id"):
+                        try:
+                            await lk.sip.delete_sip_dispatch_rule(lk_api.DeleteSIPDispatchRuleRequest(sip_dispatch_rule_id=target["livekit_dispatch_rule_id"]))
+                        except Exception:
+                            pass
+                    if target.get("livekit_trunk_id"):
+                        try:
+                            await lk.sip.delete_sip_trunk(lk_api.DeleteSIPTrunkRequest(sip_trunk_id=target["livekit_trunk_id"]))
+                        except Exception:
+                            pass
+                    await lk.aclose()
+                    await session.close()
+                except Exception as _del_lk:
+                    logger.warning("Could not delete LiveKit SIP trunk for client: %s", _del_lk)
+    except Exception:
+        pass
+
+    ok = await delete_inbound_client(client_id)
+    if not ok:
+        raise HTTPException(404, "Inbound client not found")
+    return {"status": "deleted"}
 
 
 # ── Agent Profiles ────────────────────────────────────────────────────────────

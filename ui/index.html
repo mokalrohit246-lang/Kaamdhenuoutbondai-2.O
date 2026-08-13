@@ -437,7 +437,8 @@ tr:last-child td { border-bottom: none; }
     <div class="nav-tab" data-target="tab-agents">🤖 Agents</div>
     <div class="nav-tab" data-target="tab-prompt">✏️ AI Prompt</div>
     <div class="nav-tab" data-target="tab-appointments">📅 Appointments</div>
-    <div class="nav-tab" data-target="tab-logs-calls">📝 Call Logs</div>
+    <div class="nav-tab" data-target="tab-logs-outbound">📞 Outbound Logs</div>
+    <div class="nav-tab" data-target="tab-logs-inbound" style="color:var(--accent); font-weight:700;">📥 Inbound Logs</div>
     <div class="nav-tab" data-target="tab-crm">👥 CRM</div>
     <div class="nav-tab" data-target="tab-settings">⚙️ Settings</div>
     <div class="nav-tab" data-target="tab-system-logs">📋 Logs</div>
@@ -811,23 +812,55 @@ tr:last-child td { border-bottom: none; }
     </div>
   </section>
 
-  <!-- 📝 Call Logs Tab -->
-  <section id="tab-logs-calls" class="tab-panel">
+  <!-- 📞 Outbound Logs Tab -->
+  <section id="tab-logs-outbound" class="tab-panel">
     <div class="card">
       <div class="flex justify-between items-center mb-4">
-        <h2>Call History</h2>
+        <div>
+          <h2>📞 Outbound Call Logs</h2>
+          <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:var(--text2);">Direct dials and mass campaign calls dispatched to leads.</p>
+        </div>
         <div class="flex items-center gap-2">
-          <button class="btn btn-sm" onclick="changeCallPage(-1)">Prev</button>
-          <span id="call-page-ind">Page 1</span>
-          <button class="btn btn-sm" onclick="changeCallPage(1)">Next</button>
+          <button class="btn btn-sm" onclick="changeOutboundPage(-1)">Prev</button>
+          <span id="outbound-page-ind">Page 1</span>
+          <button class="btn btn-sm" onclick="changeOutboundPage(1)">Next</button>
         </div>
       </div>
       <div class="table-wrapper">
         <table>
           <thead>
-            <tr><th>Timestamp</th><th>Phone</th><th>Lead Name</th><th>Duration</th><th>Cost</th><th>Outcome</th><th>Notes</th><th>Recording</th></tr>
+            <tr><th>Timestamp</th><th>Lead Phone</th><th>Lead Name</th><th>Duration</th><th>Cost</th><th>Outcome</th><th>Notes</th><th>Recording</th></tr>
           </thead>
-          <tbody id="tb-calls"></tbody>
+          <tbody id="tb-calls-outbound"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 📥 Inbound Logs Tab (Hot Leads with Cyan/Gold Glow) -->
+  <section id="tab-logs-inbound" class="tab-panel">
+    <div class="card" style="border:1px solid rgba(0, 204, 255, 0.3); box-shadow: 0 0 24px rgba(0, 204, 255, 0.08);">
+      <div class="flex justify-between items-center mb-4">
+        <div>
+          <h2 style="color:var(--accent2); display:flex; align-items:center; gap:0.6rem;">
+            <span class="pulse-dot" style="background:var(--accent2);"></span> 📥 Inbound Hotline Logs (Hot Incoming Leads)
+          </h2>
+          <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:var(--text2);">
+            Direct callbacks from previous campaigns and client-specific dedicated number inquiries.
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="btn btn-sm" onclick="changeInboundPage(-1)">Prev</button>
+          <span id="inbound-page-ind">Page 1</span>
+          <button class="btn btn-sm" onclick="changeInboundPage(1)">Next</button>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Timestamp</th><th>Caller Phone</th><th>Lead / Brand</th><th>Called To</th><th>Duration</th><th>Cost</th><th>Outcome</th><th>Notes / Routing</th><th>Recording</th></tr>
+          </thead>
+          <tbody id="tb-calls-inbound"></tbody>
         </table>
       </div>
     </div>
@@ -941,6 +974,63 @@ tr:last-child td { border-bottom: none; }
           <label><input type="checkbox" id="tool-end"> end_call</label>
         </div>
         <button class="btn btn-sm btn-primary mt-4" onclick="saveToolToggles()">Save Tool Preferences</button>
+      </div>
+
+      <!-- 📞 Client Inbound Numbers (Multi-Tenant Omnichannel) -->
+      <div class="card" style="grid-column: 1 / -1; border: 1px solid rgba(0, 204, 255, 0.35); box-shadow: 0 0 20px rgba(0, 204, 255, 0.06);">
+        <div class="flex justify-between items-center mb-3">
+          <div>
+            <h3 style="color:var(--accent2); display:flex; align-items:center; gap:0.5rem;">
+              📞 Client-Specific Inbound Numbers (Multi-Tenant Omnichannel)
+            </h3>
+            <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:var(--text2);">
+              Provision dedicated DID numbers for separate clients or projects. The AI agent adopts that specific client's persona and greeting dynamically.
+            </p>
+          </div>
+        </div>
+        <form id="frm-inbound-client" onsubmit="event.preventDefault(); addInboundClient();" style="background:rgba(255,255,255,0.02); padding:1rem; border-radius:var(--r); border:1px solid var(--border); margin-bottom:1rem;">
+          <div class="grid grid-3 gap-3 mb-2">
+            <div class="form-group" style="margin-bottom:0.5rem;">
+              <label>Client / Brand Name *</label>
+              <input type="text" id="inc-client-name" placeholder="e.g. Skyline Luxury Towers" required>
+            </div>
+            <div class="form-group" style="margin-bottom:0.5rem;">
+              <label>Inbound Phone Number (E.164) *</label>
+              <input type="text" id="inc-phone" placeholder="+919876543210" required>
+            </div>
+            <div class="form-group" style="margin-bottom:0.5rem;">
+              <label>Service / Business Focus</label>
+              <input type="text" id="inc-service" placeholder="e.g. 3BHK Luxury Flats">
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom:0.75rem;">
+            <label>Client-Specific System Prompt / Persona (Optional)</label>
+            <textarea id="inc-prompt" rows="2" placeholder="Custom AI instructions for this client's incoming callers (e.g. qualify budget above ₹1.5 Cr, explain amenities)..."></textarea>
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" id="btn-add-inbound-client" class="btn btn-sm btn-accent" style="padding:0.5rem 1.25rem;">
+              ➕ Provision Client Inbound Trunk
+            </button>
+          </div>
+        </form>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Client Name</th>
+                <th>Phone Number</th>
+                <th>Focus / Service</th>
+                <th>LiveKit Trunk</th>
+                <th>Dispatch Rule</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tb-inbound-clients">
+              <!-- Populated dynamically via loadInboundClients() -->
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </section>
@@ -1236,9 +1326,11 @@ function switchTab(targetId) {
   // Specific load logic on tab switch
   if(targetId === 'tab-stats') loadStats();
   if(targetId === 'tab-prompt') loadPrompt();
-  if(targetId === 'tab-settings') loadSettings();
+  if(targetId === 'tab-settings') { loadSettings(); loadInboundClients(); }
   if(targetId === 'tab-campaigns') loadCampaigns();
   if(targetId === 'tab-crm') loadCRM();
+  if(targetId === 'tab-logs-outbound') loadOutboundCalls();
+  if(targetId === 'tab-logs-inbound') loadInboundCalls();
   if(targetId === 'tab-system-logs') { loadLogs(); loadWALogs(); }
   if(targetId === 'tab-costs') calcCost();
 }
@@ -1610,18 +1702,18 @@ async function loadAppointments() {
 }
 window.cancelAppointment = async (id) => { await apiDel(`/api/appointments/${id}`); loadAppointments(); toast('Appointment cancelled'); };
 
-// Call Logs
-let callPage = 1;
-window.changeCallPage = (dir) => {
-  if (callPage + dir < 1) return;
-  callPage += dir;
-  $('call-page-ind').innerText = `Page ${callPage}`;
-  loadCalls();
+// ── Call Logs (Outbound & Inbound Separate) ──────────────────────────────────
+let outboundPage = 1;
+window.changeOutboundPage = (dir) => {
+  if (outboundPage + dir < 1) return;
+  outboundPage += dir;
+  $('outbound-page-ind').innerText = `Page ${outboundPage}`;
+  loadOutboundCalls();
 };
-async function loadCalls() {
-  const data = await api(`/api/calls?page=${callPage}&limit=20`);
+async function loadOutboundCalls() {
+  const data = await api(`/api/calls?direction=outbound&page=${outboundPage}&limit=20`);
   const calls = Array.isArray(data) ? data : [];
-  $('tb-calls').innerHTML = calls.map(c => {
+  $('tb-calls-outbound').innerHTML = calls.map(c => {
     const costVal = c.call_cost !== undefined && c.call_cost !== null 
       ? Number(c.call_cost) 
       : (c.duration_seconds ? (c.duration_seconds / 60) * 1.20 : 0);
@@ -1632,24 +1724,120 @@ async function loadCalls() {
     return `
     <tr>
       <td class="text-muted text-mono" style="font-size:0.8rem">${(c.timestamp||'').slice(0,16)}</td>
-      <td>${c.phone_number||''}</td>
+      <td style="font-weight:600;">${c.phone_number||''}</td>
       <td>${c.lead_name||'-'}</td>
       <td>${c.duration_seconds||0}s</td>
       <td style="color:var(--accent); font-family:var(--mono);">₹${costVal.toFixed(2)}</td>
       <td>${getBadgeHtml(c.outcome)}</td>
       <td>
         <div class="flex items-center gap-2">
-          <input type="text" value="${c.notes||''}" id="note-${c.id}" style="width:150px; padding:0.25rem;">
-          <button class="btn btn-sm" onclick="saveNotes('${c.id}')">💾</button>
+          <input type="text" value="${c.notes||''}" id="note-out-${c.id}" style="width:140px; padding:0.25rem;">
+          <button class="btn btn-sm" onclick="saveNotes('${c.id}', 'out')">💾</button>
         </div>
       </td>
       <td>${recUrl ? `<a href="${recUrl}" target="_blank" style="color:var(--accent2); text-decoration:underline;">Audio 🎵</a>` : '-'}</td>
     </tr>
-  `}).join('') || '<tr><td colspan="8" class="text-muted">No calls on this page</td></tr>';
+  `}).join('') || '<tr><td colspan="8" class="text-muted">No outbound calls recorded yet</td></tr>';
 }
-window.saveNotes = async (id) => {
-  await apiPatch(`/api/calls/${id}/notes`, { notes: $(`note-${id}`).value });
+
+let inboundPage = 1;
+window.changeInboundPage = (dir) => {
+  if (inboundPage + dir < 1) return;
+  inboundPage += dir;
+  $('inbound-page-ind').innerText = `Page ${inboundPage}`;
+  loadInboundCalls();
+};
+async function loadInboundCalls() {
+  const data = await api(`/api/calls?direction=inbound&page=${inboundPage}&limit=20`);
+  const calls = Array.isArray(data) ? data : [];
+  $('tb-calls-inbound').innerHTML = calls.map(c => {
+    const costVal = c.call_cost !== undefined && c.call_cost !== null 
+      ? Number(c.call_cost) 
+      : (c.duration_seconds ? (c.duration_seconds / 60) * 1.20 : 0);
+    let recUrl = c.recording_url || '';
+    if (recUrl && recUrl.includes('/storage/v1/s3/')) {
+      recUrl = recUrl.replace('/storage/v1/s3/', '/storage/v1/object/public/');
+    }
+    return `
+    <tr style="background: rgba(0, 204, 255, 0.03); border-left: 3px solid var(--accent2);">
+      <td class="text-muted text-mono" style="font-size:0.8rem">${(c.timestamp||'').slice(0,16)}</td>
+      <td style="color:var(--accent2); font-weight:700;">
+        <span class="badge" style="background:rgba(0,204,255,0.15); color:var(--accent2); margin-right:4px; font-size:0.7rem; border:1px solid rgba(0,204,255,0.3);">HOT LEAD</span>
+        ${c.phone_number||''}
+      </td>
+      <td><strong>${c.lead_name||'Valued Caller'}</strong></td>
+      <td><span class="badge badge-default text-mono" style="font-size:0.75rem;">${c.called_to || 'Global Number'}</span></td>
+      <td>${c.duration_seconds||0}s</td>
+      <td style="color:var(--accent); font-family:var(--mono);">₹${costVal.toFixed(2)}</td>
+      <td>${getBadgeHtml(c.outcome)}</td>
+      <td>
+        <div class="flex items-center gap-2">
+          <input type="text" value="${c.notes||''}" id="note-in-${c.id}" style="width:140px; padding:0.25rem;">
+          <button class="btn btn-sm btn-accent" onclick="saveNotes('${c.id}', 'in')">💾</button>
+        </div>
+      </td>
+      <td>${recUrl ? `<a href="${recUrl}" target="_blank" style="color:var(--accent2); text-decoration:underline;">Audio 🎵</a>` : '-'}</td>
+    </tr>
+  `}).join('') || '<tr><td colspan="9" class="text-muted">No inbound hotline calls received yet</td></tr>';
+}
+
+window.saveNotes = async (id, prefix='out') => {
+  const el = $(`note-${prefix}-${id}`) || $(`note-${id}`);
+  if (!el) return;
+  await apiPatch(`/api/calls/${id}/notes`, { notes: el.value });
   toast('Notes saved');
+};
+
+// ── Inbound Clients Manager ──────────────────────────────────────────────────
+async function loadInboundClients() {
+  const data = await api('/api/inbound-clients');
+  const clients = Array.isArray(data) ? data : [];
+  $('tb-inbound-clients').innerHTML = clients.map(c => `
+    <tr>
+      <td><strong>${c.client_name}</strong></td>
+      <td style="color:var(--accent2); font-family:var(--mono);">${c.phone_number}</td>
+      <td>${c.service_type || c.business_name || '-'}</td>
+      <td><span class="text-muted text-mono" style="font-size:0.75rem;">${c.livekit_trunk_id || 'Auto-Provisioned'}</span></td>
+      <td><span class="text-muted text-mono" style="font-size:0.75rem;">${c.livekit_dispatch_rule_id || 'Direct Dispatch'}</span></td>
+      <td class="text-muted text-mono" style="font-size:0.75rem;">${(c.created_at||'').slice(0,10)}</td>
+      <td>
+        <button class="btn btn-sm btn-danger" onclick="deleteInboundClient('${c.id}', '${c.client_name}')">🗑 Delete</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="text-muted">No client inbound numbers provisioned yet. Add one above!</td></tr>';
+}
+
+window.addInboundClient = async () => {
+  const btn = $('btn-add-inbound-client');
+  if (btn) { btn.disabled = true; btn.innerText = 'Provisioning LiveKit Trunk...'; }
+  const payload = {
+    client_name: $('inc-client-name').value.trim(),
+    phone_number: $('inc-phone').value.trim(),
+    service_type: $('inc-service').value.trim() || 'Real Estate Services',
+    system_prompt: $('inc-prompt').value.trim() || null,
+  };
+  try {
+    toast('Provisioning Inbound Trunk for ' + payload.client_name, 'info');
+    const res = await apiPost('/api/inbound-clients', payload);
+    toast(`Client Number Active: ${res.client_name} (${res.phone_number})`, 'ok');
+    $('frm-inbound-client').reset();
+    loadInboundClients();
+  } catch (e) {
+    toast('Failed to add client number: ' + (e.message || e), 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = '➕ Provision Client Inbound Trunk'; }
+  }
+};
+
+window.deleteInboundClient = async (id, name) => {
+  if (!confirm(`Delete inbound number for client '${name}'? This will remove its LiveKit trunk and dispatch rule.`)) return;
+  try {
+    await apiDel(`/api/inbound-clients/${id}`);
+    toast(`Deleted client ${name}`, 'ok');
+    loadInboundClients();
+  } catch (e) {
+    toast('Failed to delete: ' + (e.message || e), 'err');
+  }
 };
 
 // CRM
@@ -1975,7 +2163,9 @@ window.topupWallet = async () => {
 function init() {
   switchTab('tab-stats');
   loadStats();
-  loadCalls();
+  loadOutboundCalls();
+  loadInboundCalls();
+  loadInboundClients();
   loadAppointments();
   loadLogs();
   loadAgentProfiles();
