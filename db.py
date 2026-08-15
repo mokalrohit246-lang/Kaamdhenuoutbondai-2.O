@@ -110,7 +110,8 @@ async def get_all_settings() -> dict:
         "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
         "GOOGLE_API_KEY", "GEMINI_MODEL", "GEMINI_TTS_VOICE", "USE_GEMINI_REALTIME",
         "VOBIZ_SIP_DOMAIN", "VOBIZ_USERNAME", "VOBIZ_PASSWORD",
-        "VOBIZ_OUTBOUND_NUMBER", "OUTBOUND_TRUNK_ID", "DEFAULT_TRANSFER_NUMBER",
+        "VOBIZ_OUTBOUND_NUMBER", "OUTBOUND_TRUNK_ID", "INBOUND_TRUNK_ID", "INBOUND_DISPATCH_RULE_ID",
+        "DEFAULT_TRANSFER_NUMBER",
         "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
@@ -130,8 +131,10 @@ async def get_all_settings() -> dict:
     for k in KNOWN_KEYS:
         env_val = os.getenv(k, "").strip()
         db_val = db_rows.get(k, "")
-        if k == "OUTBOUND_TRUNK_ID":
+        if k in ("OUTBOUND_TRUNK_ID", "INBOUND_TRUNK_ID"):
             effective_val = env_val if env_val.startswith("ST_") else (db_val if db_val.startswith("ST_") else (env_val or db_val))
+        elif k == "INBOUND_DISPATCH_RULE_ID":
+            effective_val = env_val if env_val.startswith("SDR_") else (db_val if db_val.startswith("SDR_") else (env_val or db_val))
         else:
             effective_val = env_val if env_val else db_val
         is_configured = bool(effective_val)

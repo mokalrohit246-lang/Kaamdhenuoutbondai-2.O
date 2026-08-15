@@ -1982,6 +1982,7 @@ window.createSIPTrunk = async () => {
     if ($('set-sip-trunk') && res.trunk_id) {
       $('set-sip-trunk').value = res.trunk_id;
     }
+    await saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule']);
     loadSettings();
   } catch(e) {
     toast('Failed to create Outbound SIP Trunk: ' + (e.message || e), 'err');
@@ -2000,6 +2001,7 @@ window.createInboundSIPTrunk = async () => {
     if ($('set-sip-dispatch-rule') && res.dispatch_rule_id) {
       $('set-sip-dispatch-rule').value = res.dispatch_rule_id;
     }
+    await saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule']);
     loadSettings();
   } catch(e) {
     toast('Failed to create Inbound SIP Trunk: ' + (e.message || e), 'err');
