@@ -383,21 +383,23 @@ def _get_phone_variants(p: str) -> list:
         return []
     import re
     digits = re.sub(r"[^\d]", "", raw)
-    variants = set()
-    variants.add(raw)
+    # Guaranteed: Include exact input string AND string with '+' stripped
+    variants = [raw, raw.lstrip("+")]
     if digits:
-        variants.add(digits)
-        variants.add("+" + digits)
+        if digits not in variants:
+            variants.append(digits)
+        with_plus = "+" + digits
+        if with_plus not in variants:
+            variants.append(with_plus)
         if digits.startswith("91") and len(digits) == 12:
-            variants.add(digits[2:])        # 8065353767
-            variants.add("0" + digits[2:])  # 08065353767
-            variants.add("+91" + digits[2:])# +918065353767
-            variants.add("91" + digits[2:]) # 918065353767
+            ten_digit = digits[2:]
+            for v in [ten_digit, "0" + ten_digit, "+91" + ten_digit, "91" + ten_digit]:
+                if v not in variants:
+                    variants.append(v)
         elif len(digits) == 10:
-            variants.add("+91" + digits)
-            variants.add("91" + digits)
-            variants.add("0" + digits)
-            variants.add(digits)
+            for v in ["+91" + digits, "91" + digits, "0" + digits]:
+                if v not in variants:
+                    variants.append(v)
     return [v for v in variants if v]
 
 
