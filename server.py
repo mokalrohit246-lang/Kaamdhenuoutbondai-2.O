@@ -281,11 +281,18 @@ async def api_dispatch_call(req: CallRequest):
         session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
         lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
-        await lk.agent_dispatch.create_dispatch(
-            lk_api.CreateAgentDispatchRequest(
-                agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
+        try:
+            await lk.agent_dispatch.create_dispatch(
+                lk_api.CreateAgentDispatchRequest(
+                    room=room_name, metadata=json.dumps(metadata)
+                )
             )
-        )
+        except Exception:
+            await lk.agent_dispatch.create_dispatch(
+                lk_api.CreateAgentDispatchRequest(
+                    agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
+                )
+            )
         await lk.aclose()
         await session.close()
         await log_error("server", f"Call dispatched to {phone}", f"room={room_name} call_id={call_id}", "info")

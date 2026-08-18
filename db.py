@@ -23,6 +23,10 @@ DEFAULTS = {
     "VOBIZ_PASSWORD":          os.getenv("VOBIZ_PASSWORD", ""),
     "VOBIZ_OUTBOUND_NUMBER":   os.getenv("VOBIZ_OUTBOUND_NUMBER", ""),
     "OUTBOUND_TRUNK_ID":       os.getenv("OUTBOUND_TRUNK_ID", ""),
+    "INBOUND_TRUNK_ID":        os.getenv("INBOUND_TRUNK_ID", ""),
+    "INBOUND_DISPATCH_RULE_ID": os.getenv("INBOUND_DISPATCH_RULE_ID", ""),
+    "LIVEKIT_SIP_URI":         os.getenv("LIVEKIT_SIP_URI", ""),
+    "VOBIZ_API_BASE_URL":      os.getenv("VOBIZ_API_BASE_URL", "https://api.vobiz.ai/v1"),
     "DEFAULT_TRANSFER_NUMBER": os.getenv("DEFAULT_TRANSFER_NUMBER", ""),
     "SUPABASE_URL":            os.getenv("SUPABASE_URL", ""),
     "SUPABASE_SERVICE_KEY":    os.getenv("SUPABASE_SERVICE_KEY", ""),
@@ -173,6 +177,10 @@ async def get_setting(key: str, default: str = "") -> str:
     except Exception:
         pass
     return DEFAULTS.get(key, default)
+
+
+async def set_setting(key: str, value: str) -> None:
+    await save_settings({key: str(value)})
 
 
 # ── Virtual Wallet Helpers ───────────────────────────────────────────────────

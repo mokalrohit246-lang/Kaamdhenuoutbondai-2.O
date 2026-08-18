@@ -192,7 +192,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except (json.JSONDecodeError, AttributeError):
             await _log("warning", "Invalid JSON in job metadata")
 
-    if not phone_number or ctx.room.name.startswith("inbound"):
+    if not phone_number or ctx.room.name.startswith("inbound") or not ctx.job.metadata:
         is_inbound = True
 
     if not call_id:
@@ -221,14 +221,13 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     try:
         if is_inbound:
-            remote_p = None
-            for _ in range(25):
-                for p in ctx.room.remote_participants.values():
-                    remote_p = p
-                    break
-                if remote_p:
-                    break
-                await asyncio.sleep(0.4)
+            remote_p = next(iter(ctx.room.remote_participants.values()), None)
+            if not remote_p:
+                for _ in range(20):
+                    await asyncio.sleep(0.2)
+                    remote_p = next(iter(ctx.room.remote_participants.values()), None)
+                    if remote_p:
+                        break
 
             caller_phone = "unknown"
             called_to = None
@@ -241,13 +240,13 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         remote_p.attributes.get("sip.phoneNumber")
                     )
 
-            if caller_phone == "unknown" and "inbound-call-" in ctx.room.name:
+            if caller_phone in ("unknown", "") and ("inbound-call-" in ctx.room.name or "inbound-" in ctx.room.name):
                 caller_phone = ctx.room.name.replace("inbound-call-", "").replace("inbound-", "").strip()
 
             if not called_to:
                 called_to = os.getenv("VOBIZ_OUTBOUND_NUMBER", "").strip() or None
 
-            phone_number = caller_phone
+            phone_number = caller_phone or "inbound-caller"
             await _log("info", f"Inbound call received: from={caller_phone} to={called_to}")
 
             # Dual-Routing CRM / Client Inbound Lookup
@@ -535,5 +534,5 @@ if __name__ == "__main__":
     init_db()
     load_db_settings_to_env()
     agents.cli.run_app(
-        agents.WorkerOptions(entrypoint_fnc=entrypoint, agent_name="outbound-caller")
+        agents.WorkerOptions(entrypoint_fnc=entrypoint)
     )
