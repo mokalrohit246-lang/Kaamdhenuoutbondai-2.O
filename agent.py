@@ -141,58 +141,45 @@ class OutboundAssistant(Agent):
 
 
 async def entrypoint(ctx: agents.JobContext) -> None:
-    await _log("info", f"Job started — room: {ctx.room.name}")
+    logger.info("JOB RECEIVED: %s - Metadata: %s", ctx.job.id, ctx.job.metadata)
+    await _log("info", f"JOB RECEIVED: {ctx.job.id} — room: {ctx.room.name} — metadata: {ctx.job.metadata}")
 
-    call_id: Optional[str] = None
-    phone_number: Optional[str] = None
-    lead_name = "there"
-    business_name = "our company"
-    service_type = "our service"
-    property_type: Optional[str] = None
-    budget: Optional[str] = None
-    location: Optional[str] = None
-    custom_prompt: Optional[str] = None
-    voice_override: Optional[str] = None
-    model_override: Optional[str] = None
-    tools_override: Optional[str] = None
-    campaign_id: Optional[str] = None
-    campaign_name: Optional[str] = None
-    broker_phone: Optional[str] = None
-    trunk_id_override: Optional[str] = None
-
-    is_inbound = False
-
-    if ctx.job.metadata:
+    raw_meta = ctx.job.metadata or ""
+    metadata = {}
+    if raw_meta:
         try:
-            data = json.loads(ctx.job.metadata)
-            call_id             = data.get("call_id")
-            phone_number        = data.get("phone_number")
-            lead_name           = data.get("lead_name", lead_name)
-            business_name       = data.get("business_name", business_name)
-            service_type        = data.get("service_type", service_type)
-            property_type       = data.get("property_type")
-            budget              = data.get("budget")
-            location            = data.get("location")
-            custom_prompt       = data.get("system_prompt")
-            voice_override      = data.get("voice_override")
-            model_override      = data.get("model_override")
-            tools_override      = data.get("tools_override")
-            campaign_id         = data.get("campaign_id")
-            campaign_name       = data.get("campaign_name")
-            broker_phone        = data.get("broker_phone")
-            trunk_id_override   = data.get("outbound_trunk_id")
-            google_key_override = data.get("google_api_key")
-            sip_domain_override = data.get("vobiz_sip_domain")
-            if data.get("inbound") or data.get("direction") == "inbound":
-                is_inbound = True
-            if google_key_override:
-                os.environ["GOOGLE_API_KEY"] = google_key_override
-            if sip_domain_override:
-                os.environ["VOBIZ_SIP_DOMAIN"] = sip_domain_override
-        except (json.JSONDecodeError, AttributeError):
-            await _log("warning", "Invalid JSON in job metadata")
+            metadata = json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+        except Exception:
+            await _log("warning", f"Invalid JSON in job metadata: {raw_meta}")
+            metadata = {}
 
-    if not phone_number or ctx.room.name.startswith("inbound") or not ctx.job.metadata:
+    call_id             = metadata.get("call_id")
+    phone_number        = metadata.get("phone_number")
+    lead_name           = metadata.get("lead_name", "there")
+    business_name       = metadata.get("business_name", "our company")
+    service_type        = metadata.get("service_type", "our service")
+    property_type       = metadata.get("property_type")
+    budget              = metadata.get("budget")
+    location            = metadata.get("location")
+    custom_prompt       = metadata.get("system_prompt")
+    voice_override      = metadata.get("voice_override")
+    model_override      = metadata.get("model_override")
+    tools_override      = metadata.get("tools_override")
+    campaign_id         = metadata.get("campaign_id")
+    campaign_name       = metadata.get("campaign_name")
+    broker_phone        = metadata.get("broker_phone")
+    trunk_id_override   = metadata.get("outbound_trunk_id")
+    google_key_override = metadata.get("google_api_key")
+    sip_domain_override = metadata.get("vobiz_sip_domain")
+
+    if google_key_override:
+        os.environ["GOOGLE_API_KEY"] = google_key_override
+    if sip_domain_override:
+        os.environ["VOBIZ_SIP_DOMAIN"] = sip_domain_override
+
+    # Inbound Detection: If metadata is empty or direction is inbound, route to Inbound Receptionist
+    is_inbound = False
+    if not metadata or not phone_number or metadata.get("direction") == "inbound" or metadata.get("inbound") or ctx.room.name.startswith("inbound"):
         is_inbound = True
 
     if not call_id:
@@ -530,9 +517,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             pass
 
 
+async def request_fnc(req: agents.JobRequest) -> None:
+    logger.info("JOB REQUEST RECEIVED: id=%s room=%s agent_name=%s", req.job.id, req.job.room.name, getattr(req.job, "agent_name", "N/A"))
+    await req.accept(name="outbound-caller")
+
+
 if __name__ == "__main__":
     init_db()
     load_db_settings_to_env()
     agents.cli.run_app(
-        agents.WorkerOptions(entrypoint_fnc=entrypoint)
+        agents.WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            request_fnc=request_fnc,
+            agent_name="outbound-caller",
+        )
     )
