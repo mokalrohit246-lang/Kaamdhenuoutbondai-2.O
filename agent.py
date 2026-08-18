@@ -4,6 +4,7 @@ import logging
 import os
 import ssl
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -141,7 +142,7 @@ class OutboundAssistant(Agent):
 
 
 async def entrypoint(ctx: agents.JobContext) -> None:
-    logger.info("JOB RECEIVED: %s - Metadata: %s", ctx.job.id, ctx.job.metadata)
+    logger.info("JOB RECEIVED: %s - Room: %s - Metadata: %s", ctx.job.id, ctx.room.name, ctx.job.metadata)
     await _log("info", f"JOB RECEIVED: {ctx.job.id} — room: {ctx.room.name} — metadata: {ctx.job.metadata}")
 
     raw_meta = ctx.job.metadata or ""
@@ -149,9 +150,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     if raw_meta:
         try:
             metadata = json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+            if not isinstance(metadata, dict):
+                metadata = {}
         except Exception:
             await _log("warning", f"Invalid JSON in job metadata: {raw_meta}")
             metadata = {}
+
+    # Initialize called_to at top-level so finally block never hits NameError
+    called_to = None
 
     call_id             = metadata.get("call_id")
     phone_number        = metadata.get("phone_number")
@@ -518,13 +524,20 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
 
 async def request_fnc(req: agents.JobRequest) -> None:
-    logger.info("JOB REQUEST RECEIVED: id=%s room=%s agent_name=%s", req.job.id, req.job.room.name, getattr(req.job, "agent_name", "N/A"))
-    await req.accept(name="outbound-caller")
+    try:
+        logger.info("JOB REQUEST RECEIVED: id=%s room=%s agent_name=%s",
+                    getattr(req.job, 'id', 'N/A'),
+                    getattr(req.job.room, 'name', 'N/A') if hasattr(req.job, 'room') else 'N/A',
+                    getattr(req.job, 'agent_name', 'N/A'))
+        await req.accept()
+    except Exception as exc:
+        logger.error("FAILED to accept job request: %s", exc)
 
 
 if __name__ == "__main__":
     init_db()
     load_db_settings_to_env()
+    logger.info("🚀 AI WORKER IS SUCCESSFULLY RUNNING! Agent name: outbound-caller")
     agents.cli.run_app(
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
