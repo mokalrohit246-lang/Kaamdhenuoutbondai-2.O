@@ -910,17 +910,19 @@ tr:last-child td { border-bottom: none; }
       <!-- Vobiz SIP -->
       <div class="card">
         <h3>Vobiz SIP (Inbound & Outbound) <span id="badge-sip" class="badge badge-configured" style="display:none">Configured</span></h3>
-        <div class="form-group"><label>Domain</label><input type="text" id="set-sip-domain"></div>
+        <div class="form-group"><label>SIP Domain</label><input type="text" id="set-sip-domain" placeholder="sip.vobiz.in"></div>
         <div class="form-group"><label>Username</label><input type="text" id="set-sip-user"></div>
-        <div class="form-group"><label>Password</label><div class="input-with-icon"><input type="password" id="set-sip-pwd"><span class="toggle-pwd" onclick="togglePwd('set-sip-pwd')">👁</span></div></div>
-        <div class="form-group"><label>Vobiz Number</label><input type="text" id="set-sip-out" placeholder="+91..."></div>
+        <div class="form-group"><label>Password / Token</label><div class="input-with-icon"><input type="password" id="set-sip-pwd"><span class="toggle-pwd" onclick="togglePwd('set-sip-pwd')">👁</span></div></div>
+        <div class="form-group"><label>Vobiz DID Number</label><input type="text" id="set-sip-out" placeholder="+918065353767"></div>
+        <div class="form-group"><label>LiveKit SIP Destination URI</label><input type="text" id="set-sip-uri" placeholder="sip:918065353767@yourproject.sip.livekit.cloud" readonly style="color:var(--accent2); background:rgba(0,204,255,0.05); font-family:var(--mono);"></div>
         <div class="form-group"><label>Outbound Trunk ID</label><input type="text" id="set-sip-trunk" placeholder="ST_..."></div>
         <div class="form-group"><label>Inbound Trunk ID</label><input type="text" id="set-sip-inbound-trunk" placeholder="ST_..."></div>
         <div class="form-group"><label>Inbound Dispatch Rule ID</label><input type="text" id="set-sip-dispatch-rule" placeholder="SDR_..."></div>
+        <div class="form-group"><label>Vobiz API Base URL (Automated Provisioning)</label><input type="text" id="set-vobiz-api-base" placeholder="https://api.vobiz.ai/v1"></div>
         <div class="flex gap-2 flex-wrap" style="margin-top:0.5rem;">
-          <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule'])">Save SIP</button>
+          <button class="btn btn-sm btn-primary" onclick="saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-uri', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule', 'set-vobiz-api-base'])">Save SIP</button>
           <button class="btn btn-sm btn-danger" onclick="createSIPTrunk()">⚡ Create Outbound Trunk</button>
-          <button class="btn btn-sm btn-accent" id="btn-create-inbound-trunk" onclick="createInboundSIPTrunk()">⚡ Create Inbound SIP Trunk & Rule</button>
+          <button class="btn btn-sm btn-accent" id="btn-create-inbound-trunk" onclick="createInboundSIPTrunk()">⚡ Auto-Provision Inbound SIP Trunk & Rule</button>
         </div>
       </div>
 
@@ -1891,9 +1893,11 @@ const SETTINGS_MAP = {
   'set-sip-user':'VOBIZ_USERNAME',
   'set-sip-pwd':'VOBIZ_PASSWORD',
   'set-sip-out':'VOBIZ_OUTBOUND_NUMBER',
+  'set-sip-uri':'LIVEKIT_SIP_URI',
   'set-sip-trunk':'OUTBOUND_TRUNK_ID',
   'set-sip-inbound-trunk':'INBOUND_TRUNK_ID',
   'set-sip-dispatch-rule':'INBOUND_DISPATCH_RULE_ID',
+  'set-vobiz-api-base':'VOBIZ_API_BASE_URL',
   'set-transfer':'DEFAULT_TRANSFER_NUMBER',
   'set-tw-sid':'TWILIO_ACCOUNT_SID',
   'set-tw-tok':'TWILIO_AUTH_TOKEN',
@@ -1982,7 +1986,7 @@ window.createSIPTrunk = async () => {
     if ($('set-sip-trunk') && res.trunk_id) {
       $('set-sip-trunk').value = res.trunk_id;
     }
-    await saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule']);
+    await saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-uri', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule', 'set-vobiz-api-base']);
     loadSettings();
   } catch(e) {
     toast('Failed to create Outbound SIP Trunk: ' + (e.message || e), 'err');
@@ -1990,23 +1994,26 @@ window.createSIPTrunk = async () => {
 };
 window.createInboundSIPTrunk = async () => {
   const btn = $('btn-create-inbound-trunk');
-  if (btn) { btn.disabled = true; btn.innerText = 'Creating Inbound Trunk & Rule...'; }
+  if (btn) { btn.disabled = true; btn.innerText = 'Provisioning Inbound Trunk & Rule...'; }
   try {
-    toast('Creating Inbound SIP Trunk & Dispatch Rule...', 'info');
+    toast('Auto-Provisioning Inbound SIP Trunk & Vobiz Routing...', 'info');
     const res = await apiPost('/api/setup/inbound-trunk', {});
-    toast(`Inbound Trunk created: ${res.trunk_id || ''} | Rule: ${res.dispatch_rule_id || ''}`, 'ok');
+    toast(`Inbound Trunk: ${res.trunk_id || ''} | Destination: ${res.sip_destination_uri || ''}`, 'ok');
     if ($('set-sip-inbound-trunk') && res.trunk_id) {
       $('set-sip-inbound-trunk').value = res.trunk_id;
     }
     if ($('set-sip-dispatch-rule') && res.dispatch_rule_id) {
       $('set-sip-dispatch-rule').value = res.dispatch_rule_id;
     }
-    await saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule']);
+    if ($('set-sip-uri') && res.sip_destination_uri) {
+      $('set-sip-uri').value = res.sip_destination_uri;
+    }
+    await saveSettingsGroup('sip', ['set-sip-domain', 'set-sip-user', 'set-sip-pwd', 'set-sip-out', 'set-sip-uri', 'set-sip-trunk', 'set-sip-inbound-trunk', 'set-sip-dispatch-rule', 'set-vobiz-api-base']);
     loadSettings();
   } catch(e) {
     toast('Failed to create Inbound SIP Trunk: ' + (e.message || e), 'err');
   } finally {
-    if (btn) { btn.disabled = false; btn.innerText = '⚡ Create Inbound SIP Trunk & Rule'; }
+    if (btn) { btn.disabled = false; btn.innerText = '⚡ Auto-Provision Inbound SIP Trunk & Rule'; }
   }
 };
 window.saveToolToggles = async () => {
