@@ -588,14 +588,14 @@ async def setup_automated_inbound_pipeline(
     )
     livekit_trunk_id = inbound_trunk.sip_trunk_id
 
-    # 2. Create LiveKit Dispatch Rule with agent routing
+    # 2. Create LiveKit Dispatch Rule with individual caller room & agent routing
     dispatch_rule = await lk.sip.create_sip_dispatch_rule(
         lk_api.CreateSIPDispatchRuleRequest(
             name=rule_name,
             trunk_ids=[livekit_trunk_id],
             rule=lk_api.SIPDispatchRule(
-                dispatch_rule_direct=lk_api.SIPDispatchRuleDirect(
-                    room_name="inbound-call-{caller_identity}",
+                dispatch_rule_individual=lk_api.SIPDispatchRuleIndividual(
+                    room_prefix="inbound-call-",
                     pin="",
                 )
             ),
