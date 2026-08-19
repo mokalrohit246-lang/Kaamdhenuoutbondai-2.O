@@ -8,6 +8,7 @@ import random
 import ssl
 import uuid
 import aiohttp
+import sys
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -58,18 +59,85 @@ except ImportError:
 
 app = FastAPI(title="OutboundAI Dashboard", version="2.0.0")
 
+_agent_proc: Optional[asyncio.subprocess.Process] = None
+_agent_task: Optional[asyncio.Task] = None
+
+
+async def _agent_supervisor():
+    """Continuously supervise and stream logs from the agent.py worker process."""
+    global _agent_proc
+    while True:
+        try:
+            logger.info("🚀 [SUPERVISOR] Spawning agent.py LiveKit AI worker...")
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            
+            _agent_proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-u", "agent.py", "start",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            logger.info("✅ [SUPERVISOR] agent.py successfully spawned with PID %d", _agent_proc.pid)
+
+            async def _stream_pipe(stream, is_stderr=False):
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    text = line.decode(errors="replace").rstrip()
+                    if text:
+                        if is_stderr:
+                            logger.error("[AGENT-STDERR] %s", text)
+                        else:
+                            logger.info("[AGENT-STDOUT] %s", text)
+
+            stdout_task = asyncio.create_task(_stream_pipe(_agent_proc.stdout, False))
+            stderr_task = asyncio.create_task(_stream_pipe(_agent_proc.stderr, True))
+
+            returncode = await _agent_proc.wait()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            logger.warning("⚠️ [SUPERVISOR] agent.py (PID %d) exited with returncode %d. Auto-restarting in 3 seconds...",
+                           getattr(_agent_proc, "pid", 0), returncode)
+        except asyncio.CancelledError:
+            logger.info("🛑 [SUPERVISOR] Stopping agent worker supervisor...")
+            if _agent_proc and _agent_proc.returncode is None:
+                try:
+                    _agent_proc.terminate()
+                    await asyncio.wait_for(_agent_proc.wait(), timeout=5.0)
+                except Exception:
+                    _agent_proc.kill()
+            break
+        except Exception as exc:
+            logger.error("❌ [SUPERVISOR] Error managing agent process: %s. Retrying in 3s...", exc)
+        
+        await asyncio.sleep(3)
+
 
 @app.on_event("startup")
 async def _startup():
+    global _agent_task
     if _scheduler:
         _scheduler.start()
         await _reschedule_all_campaigns()
+    
+    # Auto-spawn LiveKit agent worker alongside web server
+    if os.getenv("SPAWN_AGENT_WORKER", "true").lower() != "false":
+        _agent_task = asyncio.create_task(_agent_supervisor())
 
 
 @app.on_event("shutdown")
 async def _shutdown():
+    global _agent_task, _agent_proc
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
+    if _agent_task and not _agent_task.done():
+        _agent_task.cancel()
+    if _agent_proc and _agent_proc.returncode is None:
+        try:
+            _agent_proc.terminate()
+        except Exception:
+            pass
 
 
 async def eff(key: str) -> str:
@@ -90,14 +158,40 @@ async def eff(key: str) -> str:
 
 @app.get("/health")
 async def health_check():
+    global _agent_proc
+    agent_running = _agent_proc is not None and _agent_proc.returncode is None
     return {
         "status": "healthy",
+        "agent_worker_running": agent_running,
+        "agent_pid": _agent_proc.pid if agent_running else None,
         "livekit_configured": bool(os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY")),
         "gemini_configured": bool(os.getenv("GOOGLE_API_KEY")),
         "supabase_configured": bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_KEY")),
         "trunk_configured": bool(os.getenv("OUTBOUND_TRUNK_ID")),
         "outbound_number": os.getenv("VOBIZ_OUTBOUND_NUMBER", ""),
     }
+
+
+@app.get("/api/agent/status")
+async def api_agent_status():
+    global _agent_proc
+    running = _agent_proc is not None and _agent_proc.returncode is None
+    return {
+        "status": "running" if running else "stopped",
+        "pid": _agent_proc.pid if running else None,
+        "returncode": _agent_proc.returncode if _agent_proc else None,
+    }
+
+
+@app.post("/api/agent/restart")
+async def api_agent_restart():
+    global _agent_proc
+    if _agent_proc and _agent_proc.returncode is None:
+        try:
+            _agent_proc.terminate()
+        except Exception:
+            pass
+    return {"status": "restarting"}
 
 
 # ── Request models ────────────────────────────────────────────────────────────

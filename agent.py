@@ -1,12 +1,19 @@
+import os
+import sys
+from datetime import datetime
+
+print("=" * 65, flush=True)
+print("🚨🚨🚨 AGENT SCRIPT IS EXECUTING (agent.py) 🚨🚨🚨", flush=True)
+print(f"PID: {os.getpid()} | Python: {sys.version.split()[0]} | Time: {datetime.now().isoformat()}", flush=True)
+print("=" * 65, flush=True)
+
 import asyncio
 import json
 import logging
-import os
 import ssl
 import time
 import traceback
 import uuid
-from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -611,6 +618,9 @@ async def request_fnc(req: agents.JobRequest) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    if len(sys.argv) <= 1:
+        sys.argv.append("start")
+    print(f"🚀 [agent.py] Initializing with CLI args: {sys.argv}", flush=True)
     init_db()
     load_db_settings_to_env()
     logger.info("🚀 AGENT WORKER INITIALIZED AND LISTENING — agent_name=outbound-caller")

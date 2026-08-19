@@ -21,6 +21,9 @@ COPY . .
 # Normalize line endings and set execution permissions
 RUN dos2unix start.sh && chmod +x start.sh
 
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

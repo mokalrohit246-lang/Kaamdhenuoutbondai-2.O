@@ -35,26 +35,7 @@ echo "   Outbound Trunk:   ${OUTBOUND_TRUNK_ID:-[Not Set]}"
 echo "   WhatsApp From:    ${TWILIO_WA_FROM:-[Not Set]}"
 echo "=========================================="
 
-# Trap termination signals to gracefully stop both processes
-cleanup() {
-    echo "🛑 Shutting down services..."
-    kill $SERVER_PID 2>/dev/null || true
-    kill $AGENT_PID 2>/dev/null || true
-    exit 0
-}
-trap cleanup SIGINT SIGTERM
+export PYTHONUNBUFFERED=1
 
-echo "🌐 Starting FastAPI Server on 0.0.0.0:8000..."
-uvicorn server:app --host 0.0.0.0 --port 8000 &
-SERVER_PID=$!
-
-sleep 2
-
-echo "🤖 Starting LiveKit Agent Worker (outbound-caller)..."
-python agent.py start &
-AGENT_PID=$!
-
-# Wait for either process to terminate
-wait -n $SERVER_PID $AGENT_PID || true
-
-cleanup
+echo "🌐 Starting FastAPI Server & AI Agent Supervisor on 0.0.0.0:8000..."
+exec uvicorn server:app --host 0.0.0.0 --port 8000
