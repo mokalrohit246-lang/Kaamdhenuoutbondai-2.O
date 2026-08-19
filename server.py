@@ -647,27 +647,27 @@ async def setup_automated_inbound_pipeline(
     trunk_name = f"Inbound Trunk - {client_name or 'Vobiz'}"
     rule_name = f"Inbound Dispatch - {client_name or 'AI Receptionist'}"
 
-    # Clean up old duplicate trunks / rules
+    # Clean up ALL old duplicate inbound dispatch rules on project
     try:
         rule_list = await lk.sip.list_sip_dispatch_rule(lk_api.ListSIPDispatchRuleRequest())
         for r in getattr(rule_list, "items", []):
-            if getattr(r, "name", "") in (rule_name, "Inbound AI Receptionist Rule"):
-                try:
-                    await lk.sip.delete_sip_dispatch_rule(lk_api.DeleteSIPDispatchRuleRequest(sip_dispatch_rule_id=r.sip_dispatch_rule_id))
-                except Exception:
-                    pass
+            try:
+                await lk.sip.delete_sip_dispatch_rule(lk_api.DeleteSIPDispatchRuleRequest(sip_dispatch_rule_id=r.sip_dispatch_rule_id))
+                logger.info("Deleted old dispatch rule: id=%s name=%s", r.sip_dispatch_rule_id, getattr(r, "name", ""))
+            except Exception:
+                pass
     except Exception as _e:
         logger.info("Notice checking dispatch rules: %s", _e)
 
+    # Clean up ALL old inbound trunks on project
     try:
         trunk_list = await lk.sip.list_sip_inbound_trunk(lk_api.ListSIPInboundTrunkRequest())
         for t in getattr(trunk_list, "items", []):
-            t_nums = list(getattr(t, "numbers", []))
-            if getattr(t, "name", "") in (trunk_name, "Vobiz Inbound Trunk") or any(n in phone_variants for n in t_nums):
-                try:
-                    await lk.sip.delete_sip_trunk(lk_api.DeleteSIPTrunkRequest(sip_trunk_id=t.sip_trunk_id))
-                except Exception:
-                    pass
+            try:
+                await lk.sip.delete_sip_trunk(lk_api.DeleteSIPTrunkRequest(sip_trunk_id=t.sip_trunk_id))
+                logger.info("Deleted old inbound trunk: id=%s name=%s", t.sip_trunk_id, getattr(t, "name", ""))
+            except Exception:
+                pass
     except Exception as _e:
         logger.info("Notice checking inbound trunks: %s", _e)
 
