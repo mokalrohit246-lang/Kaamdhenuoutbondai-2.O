@@ -318,9 +318,9 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             f"Caller: {lead_name} ({phone_number})."
         )
         if lead_name != "there":
-            greeting = f"Hello {lead_name}! Welcome to {business_name}. How can I assist you with your property search today?"
+            greeting = f"Hello {lead_name}! Namaste, welcome to {business_name}. How can I assist you with your property search today?"
         else:
-            greeting = f"Hello! Welcome to {business_name}. I am Priya, your AI property advisor. How may I assist you today?"
+            greeting = f"Hello! Namaste, welcome to {business_name}. I am Priya, your AI property advisor. How may I assist you today?"
 
     elif routing_type == "missed_call_return":
         inbound_context = (
@@ -330,9 +330,9 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             f"Warmly acknowledge that they called back and assist them with their inquiry."
         )
         if lead_name != "there":
-            greeting = f"Hello {lead_name}! Thank you for calling back {business_name}. You recently received a call from us regarding {service_type or 'our properties'}. How can I assist you today?"
+            greeting = f"Hello {lead_name}! Namaste, thank you for calling back {business_name}. You recently received a call from us regarding {service_type or 'our properties'}. How can I assist you today?"
         else:
-            greeting = f"Hello! Thank you for calling back {business_name}. I understand you missed our call. How can I assist you today?"
+            greeting = f"Hello! Namaste, thank you for calling back {business_name}. I understand you missed our call. How can I assist you today?"
 
     else:
         inbound_context = (
@@ -340,7 +340,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             f"This is an INBOUND call from a new prospective client ({phone_number}). "
             f"Professionally greet them as the AI Receptionist for {business_name} and qualify their real estate inquiry."
         )
-        greeting = f"Hello! Thank you for calling {business_name}. I am Priya, your AI property advisor. How may I assist you today?"
+        greeting = f"Hello! Namaste, thank you for calling {business_name}. I am Priya, your AI property advisor. How may I assist you today?"
 
     effective_prompt = (caller_info.get("custom_prompt") or custom_prompt or "") + inbound_context
     system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
@@ -455,7 +455,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     asyncio.create_task(_start_recording(ctx, tool_ctx))
 
     # Speak greeting
-    greeting = f"Hi {lead_name}! I am Priya calling from {business_name}. Am I speaking with {lead_name}?"
+    greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
     try:
         await session.generate_reply(instructions=greeting)
     except Exception as _gr_exc:
