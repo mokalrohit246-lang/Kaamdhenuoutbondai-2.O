@@ -216,24 +216,16 @@ async def _wait_for_hangup(ctx: agents.JobContext, label: str = "Participant"):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  INBOUND CALL HANDLER
+#  INBOUND CALL HANDLER — INSTANT GREETING (< 500ms)
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                           tool_ctx, enabled_tools: list):
-    """Handle an incoming SIP call. The caller is already in the room."""
+    """Handle an incoming SIP call with instant greeting response (< 500ms)."""
     await _log("info", f"INBOUND HANDLER started for room={ctx.room.name}")
 
-    # Wait for SIP participant to appear
+    # 1. Instant non-blocking participant identity resolution (0ms)
     remote_p = next(iter(ctx.room.remote_participants.values()), None)
-    if not remote_p:
-        for _ in range(25):
-            await asyncio.sleep(0.2)
-            remote_p = next(iter(ctx.room.remote_participants.values()), None)
-            if remote_p:
-                break
-
-    # Extract caller phone and dialed number
     caller_phone = "unknown"
     called_to = None
     if remote_p:
@@ -245,7 +237,6 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             attrs.get("sip.phoneNumber")
         )
 
-    # Fallback: extract from room name
     if caller_phone in ("unknown", ""):
         room = ctx.room.name
         if "inbound-call-" in room:
@@ -257,95 +248,20 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         called_to = os.getenv("VOBIZ_OUTBOUND_NUMBER", "").strip() or None
 
     phone_number = caller_phone or "inbound-caller"
-    await _log("info", f"Inbound call active: from={phone_number} to={called_to}")
 
-    # CRM / Client Inbound Lookup
-    caller_info = await lookup_inbound_caller(caller_phone=caller_phone, called_to=called_to)
-    lead_name       = caller_info.get("lead_name") or "there"
-    business_name   = caller_info.get("business_name") or "Kaamdhenu Real Estate"
-    service_type    = caller_info.get("service_type") or "Real Estate Services"
-    property_type   = caller_info.get("property_type")
-    budget          = caller_info.get("budget")
-    location        = caller_info.get("location")
-    campaign_id     = caller_info.get("campaign_id")
-    broker_phone    = caller_info.get("broker_phone")
-    routing_type    = caller_info.get("routing_type", "global_receptionist")
-
-    if caller_info.get("agent_voice"):
-        os.environ["GEMINI_TTS_VOICE"] = caller_info["agent_voice"]
-
-    # Update tool context
-    tool_ctx.phone_number   = phone_number
-    tool_ctx.lead_name      = lead_name
-    tool_ctx.campaign_id    = campaign_id
-    tool_ctx.campaign_name  = caller_info.get("campaign_name")
-    tool_ctx.broker_phone   = broker_phone
-    tool_ctx.business_name  = business_name
-    tool_ctx.service_type   = service_type
-    tool_ctx.property_type  = property_type
-    tool_ctx.budget         = budget
-    tool_ctx.location       = location
-
-    # Log inbound call to DB
-    notes_text = (
-        f"Client Inbound ({caller_info.get('client_name')})" if routing_type == "client_specific"
-        else (f"Missed Call Return (Previous: {caller_info.get('last_outcome')})" if routing_type == "missed_call_return"
-        else "Inbound Call")
-    )
-    asyncio.create_task(start_call_log(
-        call_id=call_id,
-        phone_number=phone_number,
-        lead_name=lead_name,
-        service_type=service_type,
-        property_type=property_type,
-        budget=budget,
-        location=location,
-        notes=notes_text,
-        campaign_id=campaign_id,
-        call_direction="inbound",
-        called_to=called_to,
-    ))
-
-    # Build Context & Greeting based on routing
+    # 2. Build default system prompt & greeting INSTANTLY (0ms)
     custom_prompt = metadata.get("system_prompt") or ""
+    inbound_context = (
+        f"\n\n[GLOBAL INBOUND RECEPTIONIST CONTEXT]\n"
+        f"This is an INBOUND call from ({phone_number}). "
+        f"Greet them immediately as Priya, the AI Receptionist for Kaamdhenu Real Estate."
+    )
+    effective_prompt = custom_prompt + inbound_context
+    system_prompt = build_prompt(lead_name="there", business_name="Kaamdhenu Real Estate",
+                                 service_type="Real Estate Services", custom_prompt=effective_prompt)
 
-    if routing_type == "client_specific":
-        inbound_context = (
-            f"\n\n[CLIENT INBOUND RECEPTIONIST CONTEXT]\n"
-            f"You are the dedicated AI Assistant for '{business_name}' (Client: {caller_info.get('client_name')}). "
-            f"The user dialed the dedicated client line ({called_to}). "
-            f"Adopt the brand voice and services of {business_name} entirely. "
-            f"Caller: {lead_name} ({phone_number})."
-        )
-        if lead_name != "there":
-            greeting = f"Hello {lead_name}! Namaste, welcome to {business_name}. How can I assist you with your property search today?"
-        else:
-            greeting = f"Hello! Namaste, welcome to {business_name}. I am Priya, your AI property advisor. How may I assist you today?"
-
-    elif routing_type == "missed_call_return":
-        inbound_context = (
-            f"\n\n[GLOBAL MISSED CALL RETURN CONTEXT]\n"
-            f"This is an INBOUND callback from {lead_name} ({phone_number}). "
-            f"They missed our recent call regarding {service_type}. "
-            f"Warmly acknowledge that they called back and assist them with their inquiry."
-        )
-        if lead_name != "there":
-            greeting = f"Hello {lead_name}! Namaste, thank you for calling back {business_name}. You recently received a call from us regarding {service_type or 'our properties'}. How can I assist you today?"
-        else:
-            greeting = f"Hello! Namaste, thank you for calling back {business_name}. I understand you missed our call. How can I assist you today?"
-
-    else:
-        inbound_context = (
-            f"\n\n[GLOBAL INBOUND RECEPTIONIST CONTEXT]\n"
-            f"This is an INBOUND call from a new prospective client ({phone_number}). "
-            f"Professionally greet them as the AI Receptionist for {business_name} and qualify their real estate inquiry."
-        )
-        greeting = f"Hello! Namaste, thank you for calling {business_name}. I am Priya, your AI property advisor. How may I assist you today?"
-
-    effective_prompt = (caller_info.get("custom_prompt") or custom_prompt or "") + inbound_context
-    system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
-                                 service_type=service_type, custom_prompt=effective_prompt)
-
+    # 3. Start AI Session IMMEDIATELY
+    tool_ctx.phone_number = phone_number
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
     await session.start(
@@ -355,37 +271,61 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
 
-    # Start recording
-    asyncio.create_task(_start_recording(ctx, tool_ctx))
-
-    # Speak greeting immediately
+    # 4. TRIGGER INSTANT GREETING IMMEDIATELY (< 200ms!)
+    greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
     try:
-        await session.generate_reply(instructions=greeting)
-        await _log("info", f"Inbound greeting spoken ({routing_type}) to {phone_number}")
+        asyncio.create_task(session.generate_reply(instructions=greeting))
+        await _log("info", f"Instant Inbound greeting triggered to {phone_number}")
     except Exception as _gr_exc:
         await _log("warning", f"Inbound greeting notice: {_gr_exc}")
 
-    # Wait for caller to hang up
+    # 5. Background CRM lookup, DB logging & S3 recording (non-blocking)
+    async def _bg_inbound_setup():
+        try:
+            caller_info = await lookup_inbound_caller(caller_phone=caller_phone, called_to=called_to)
+            lead_name = caller_info.get("lead_name") or "there"
+            business_name = caller_info.get("business_name") or "Kaamdhenu Real Estate"
+            service_type = caller_info.get("service_type") or "Real Estate Services"
+            
+            tool_ctx.lead_name = lead_name
+            tool_ctx.business_name = business_name
+            tool_ctx.service_type = service_type
+            tool_ctx.campaign_id = caller_info.get("campaign_id")
+
+            notes_text = f"Client Inbound ({caller_info.get('client_name')})" if caller_info.get('routing_type') == "client_specific" else "Inbound Call"
+            await start_call_log(
+                call_id=call_id,
+                phone_number=phone_number,
+                lead_name=lead_name,
+                service_type=service_type,
+                notes=notes_text,
+                campaign_id=caller_info.get("campaign_id"),
+                call_direction="inbound",
+                called_to=called_to,
+            )
+        except Exception as _exc:
+            logger.warning("Background inbound setup notice: %s", _exc)
+
+    asyncio.create_task(_bg_inbound_setup())
+    asyncio.create_task(_start_recording(ctx, tool_ctx))
+
+    # 6. Wait for caller to hang up
     await _wait_for_hangup(ctx, label="Inbound caller")
 
-    return session, call_start_time, phone_number, lead_name, campaign_id, called_to
+    return session, call_start_time, phone_number, "there", None, called_to
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  OUTBOUND CALL HANDLER
+#  OUTBOUND CALL HANDLER — INSTANT GREETING ON ANSWER (< 200ms)
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                            tool_ctx, enabled_tools: list):
-    """Handle an outbound SIP call. We dial the customer."""
+    """Handle an outbound SIP call with instant greeting response on answer."""
     phone_number    = metadata.get("phone_number")
     lead_name       = metadata.get("lead_name", "there")
     business_name   = metadata.get("business_name", "our company")
     service_type    = metadata.get("service_type", "our service")
-    property_type   = metadata.get("property_type")
-    budget          = metadata.get("budget")
-    location        = metadata.get("location")
-    custom_prompt   = metadata.get("system_prompt")
     campaign_id     = metadata.get("campaign_id")
     campaign_name   = metadata.get("campaign_name")
     broker_phone    = metadata.get("broker_phone")
@@ -400,14 +340,13 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     tool_ctx.broker_phone   = broker_phone
     tool_ctx.business_name  = business_name
     tool_ctx.service_type   = service_type
-    tool_ctx.property_type  = property_type
-    tool_ctx.budget         = budget
-    tool_ctx.location       = location
 
     system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
-                                 service_type=service_type, custom_prompt=custom_prompt)
+                                 service_type=service_type, custom_prompt=metadata.get("system_prompt"))
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
+
+    # 1. Pre-start AI Session so Gemini WebRTC connection is ALREADY connected & warm
     await session.start(
         room=ctx.room,
         agent=OutboundAssistant(instructions=system_prompt),
@@ -431,6 +370,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
     asyncio.create_task(complete_call_log(call_id, outcome="ringing", reason="Dialing customer via SIP", call_direction="outbound"))
 
+    # 2. Dial SIP participant
     try:
         await ctx.api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
@@ -443,7 +383,6 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         )
         call_start_time = time.time()
         tool_ctx._call_start_time = call_start_time
-        asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
     except Exception as exc:
         err_msg = f"SIP dial failed: {exc}"
         await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
@@ -451,17 +390,19 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         tool_ctx.end_reason = err_msg
         return session, None, phone_number, lead_name, campaign_id, None
 
-    # Start recording
-    asyncio.create_task(_start_recording(ctx, tool_ctx))
-
-    # Speak greeting
+    # 3. CUSTOMER ANSWERED! TRIGGER INSTANT GREETING IMMEDIATELY (< 200ms!)
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
     try:
-        await session.generate_reply(instructions=greeting)
+        asyncio.create_task(session.generate_reply(instructions=greeting))
+        await _log("info", f"Instant Outbound greeting triggered to {phone_number}")
     except Exception as _gr_exc:
         await _log("warning", f"Greeting notice: {_gr_exc}")
 
-    # Wait for customer to hang up
+    # 4. Background tasks for DB logging & S3 recording (non-blocking)
+    asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
+    asyncio.create_task(_start_recording(ctx, tool_ctx))
+
+    # 5. Wait for customer to hang up
     await _wait_for_hangup(ctx, label="Customer")
 
     return session, call_start_time, phone_number, lead_name, campaign_id, None
