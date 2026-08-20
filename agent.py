@@ -69,7 +69,7 @@ SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _log(level: str, msg: str, detail: str = "") -> None:
-    """Log locally AND persist to Supabase error_logs table."""
+    """Log locally AND persist to Supabase error_logs table in background (non-blocking)."""
     if level == "info":
         logger.info(msg)
     elif level == "warning":
@@ -77,7 +77,7 @@ async def _log(level: str, msg: str, detail: str = "") -> None:
     else:
         logger.error(msg)
     try:
-        await log_error("agent", msg, detail, level)
+        asyncio.create_task(log_error("agent", msg, detail, level))
     except Exception:
         pass
 
@@ -144,25 +144,72 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
 
+    # ── Optimized Silero VAD Configuration (Fast 0.4s endpointing) ───────────
+    vad = None
+    if silero:
+        try:
+            vad = silero.VAD.load(
+                min_speech_duration=0.05,
+                min_silence_duration=0.3,
+                prefix_padding_duration=0.2,
+                max_buffered_speech=5.0,
+            )
+        except Exception:
+            try:
+                vad = silero.VAD.load()
+            except Exception:
+                pass
+
+    session_opts = {
+        "tools": tools,
+    }
+    if vad is not None:
+        session_opts["vad"] = vad
+
+    # Fast endpointing delay options (0.4s min_endpointing_delay, 1.2s max_endpointing_delay)
+    try:
+        session_opts["min_endpointing_delay"] = 0.4
+        session_opts["max_endpointing_delay"] = 1.2
+    except Exception:
+        pass
+
     if use_realtime and RealtimeClass is not None:
-        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
-        return AgentSession(
-            llm=RealtimeClass(
-                model=gemini_model,
-                voice=gemini_voice,
-                instructions=system_prompt,
-            ),
-            tools=tools,
-        )
+        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s, min_endpointing=0.4s)", gemini_model, gemini_voice)
+        try:
+            return AgentSession(
+                llm=RealtimeClass(
+                    model=gemini_model,
+                    voice=gemini_voice,
+                    instructions=system_prompt,
+                ),
+                **session_opts,
+            )
+        except TypeError:
+            return AgentSession(
+                llm=RealtimeClass(
+                    model=gemini_model,
+                    voice=gemini_voice,
+                    instructions=system_prompt,
+                ),
+                tools=tools,
+                vad=vad,
+            )
 
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
 
-    logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS)")
+    logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS, min_endpointing=0.4s)")
     stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
     tts = _google_tts() if _google_tts else None
-    vad = silero.VAD.load() if silero else None
-    return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=vad, tools=tools)
+    try:
+        return AgentSession(
+            stt=stt,
+            llm=_google_llm(model="gemini-2.0-flash"),
+            tts=tts,
+            **session_opts,
+        )
+    except TypeError:
+        return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=vad, tools=tools)
 
 
 class OutboundAssistant(Agent):
@@ -271,13 +318,17 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
 
-    # 4. TRIGGER INSTANT GREETING IMMEDIATELY (< 200ms!)
+    # 4. DISPATCH GREETING IMMEDIATELY ON CONNECT (Do NOT wait for user turn)
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
     try:
-        asyncio.create_task(session.generate_reply(instructions=greeting))
-        await _log("info", f"Instant Inbound greeting triggered to {phone_number}")
+        await session.generate_reply(instructions=f"Speak your opening greeting immediately to welcome the caller: '{greeting}'")
+        await _log("info", f"Instant Inbound greeting dispatched to {phone_number}")
     except Exception as _gr_exc:
-        await _log("warning", f"Inbound greeting notice: {_gr_exc}")
+        await _log("warning", f"Inbound greeting fallback notice: {_gr_exc}")
+        try:
+            await session.say(greeting, allow_interruptions=True)
+        except Exception:
+            pass
 
     # 5. Background CRM lookup, DB logging & S3 recording (non-blocking)
     async def _bg_inbound_setup():
@@ -390,13 +441,17 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         tool_ctx.end_reason = err_msg
         return session, None, phone_number, lead_name, campaign_id, None
 
-    # 3. CUSTOMER ANSWERED! TRIGGER INSTANT GREETING IMMEDIATELY (< 200ms!)
+    # 3. CUSTOMER ANSWERED! DISPATCH GREETING IMMEDIATELY ON CONNECT (Do NOT wait for user turn)
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
     try:
-        asyncio.create_task(session.generate_reply(instructions=greeting))
-        await _log("info", f"Instant Outbound greeting triggered to {phone_number}")
+        await session.generate_reply(instructions=f"Speak your opening greeting immediately to welcome the customer: '{greeting}'")
+        await _log("info", f"Instant Outbound greeting dispatched to {phone_number}")
     except Exception as _gr_exc:
-        await _log("warning", f"Greeting notice: {_gr_exc}")
+        await _log("warning", f"Outbound greeting fallback notice: {_gr_exc}")
+        try:
+            await session.say(greeting, allow_interruptions=True)
+        except Exception:
+            pass
 
     # 4. Background tasks for DB logging & S3 recording (non-blocking)
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
