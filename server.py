@@ -629,129 +629,20 @@ async def setup_automated_inbound_pipeline(
     if not all([url, key, secret]):
         raise HTTPException(400, "LiveKit credentials (URL, API Key, Secret) are required.")
 
-    # Step 1: LiveKit Provisioning & '+' Sign Fix
+    # Automated Inbound Provisioning has been disabled to prevent resetting manual Vobiz/LiveKit routing
     phone_variants = _get_phone_variants(phone_number)
-    if phone_number.strip() not in phone_variants:
-        phone_variants.insert(0, phone_number.strip())
-    stripped = phone_number.strip().lstrip("+")
-    if stripped not in phone_variants:
-        phone_variants.append(stripped)
-
-    from livekit import api as lk_api
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
-    lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
-
-    trunk_name = f"Inbound Trunk - {client_name or 'Vobiz'}"
-    rule_name = f"Inbound Dispatch - {client_name or 'AI Receptionist'}"
-
-    # Clean up ALL old duplicate inbound dispatch rules on project
-    try:
-        rule_list = await lk.sip.list_sip_dispatch_rule(lk_api.ListSIPDispatchRuleRequest())
-        for r in getattr(rule_list, "items", []):
-            try:
-                await lk.sip.delete_sip_dispatch_rule(lk_api.DeleteSIPDispatchRuleRequest(sip_dispatch_rule_id=r.sip_dispatch_rule_id))
-                logger.info("Deleted old dispatch rule: id=%s name=%s", r.sip_dispatch_rule_id, getattr(r, "name", ""))
-            except Exception:
-                pass
-    except Exception as _e:
-        logger.info("Notice checking dispatch rules: %s", _e)
-
-    # Clean up ALL old inbound trunks on project
-    try:
-        trunk_list = await lk.sip.list_sip_inbound_trunk(lk_api.ListSIPInboundTrunkRequest())
-        for t in getattr(trunk_list, "items", []):
-            try:
-                await lk.sip.delete_sip_trunk(lk_api.DeleteSIPTrunkRequest(sip_trunk_id=t.sip_trunk_id))
-                logger.info("Deleted old inbound trunk: id=%s name=%s", t.sip_trunk_id, getattr(t, "name", ""))
-            except Exception:
-                pass
-    except Exception as _e:
-        logger.info("Notice checking inbound trunks: %s", _e)
-
-    # 1. Create LiveKit Inbound Trunk
-    inbound_trunk = await lk.sip.create_sip_inbound_trunk(
-        lk_api.CreateSIPInboundTrunkRequest(
-            trunk=lk_api.SIPInboundTrunkInfo(
-                name=trunk_name,
-                numbers=phone_variants,
-            )
-        )
-    )
-    livekit_trunk_id = inbound_trunk.sip_trunk_id
-
-    # 2. Create LiveKit Dispatch Rule with individual caller room & agent routing
-    dispatch_rule = await lk.sip.create_sip_dispatch_rule(
-        lk_api.CreateSIPDispatchRuleRequest(
-            name=rule_name,
-            trunk_ids=[livekit_trunk_id],
-            rule=lk_api.SIPDispatchRule(
-                dispatch_rule_individual=lk_api.SIPDispatchRuleIndividual(
-                    room_prefix="inbound-call-",
-                    pin="",
-                )
-            ),
-            room_config=lk_api.RoomConfiguration(
-                agents=[
-                    lk_api.RoomAgentDispatch(
-                        agent_name="outbound-caller",
-                        metadata=json.dumps({"direction": "inbound"}),
-                    )
-                ]
-            ),
-        )
-    )
-    livekit_rule_id = dispatch_rule.sip_dispatch_rule_id
-    await lk.aclose()
-    await session.close()
-
-    # Extract LiveKit SIP URI
     sip_info = _extract_livekit_sip_uri(url, phone_number)
     livekit_sip_uri = sip_info["sip_uri"]
     livekit_sip_domain = sip_info["sip_domain"]
 
-    # Step 2: Vobiz Inbound Trunk Automation (via HTTP REST API)
-    vobiz_trunk_res = await _vobiz_api_request(
-        method="POST",
-        endpoint="inbound-trunks",
-        base_url=base_url,
-        username=username,
-        password=password,
-        payload={
-            "name": f"LiveKit Inbound - {client_name}",
-            "destination_uri": livekit_sip_uri,
-            "origination_uri": livekit_sip_uri,
-            "sip_domain": livekit_sip_domain,
-            "phone_number": phone_number.strip().lstrip("+"),
-        }
-    )
+    livekit_trunk_id = await get_setting("INBOUND_TRUNK_ID", os.getenv("INBOUND_TRUNK_ID", ""))
+    livekit_rule_id = await get_setting("INBOUND_DISPATCH_RULE_ID", os.getenv("INBOUND_DISPATCH_RULE_ID", ""))
 
-    vobiz_trunk_id = None
-    if vobiz_trunk_res.get("success") and isinstance(vobiz_trunk_res.get("data"), dict):
-        vobiz_trunk_id = (
-            vobiz_trunk_res["data"].get("id") or
-            vobiz_trunk_res["data"].get("trunk_id") or
-            vobiz_trunk_res["data"].get("inbound_trunk_id")
-        )
-
-    # Step 3: Number Assignment (via Vobiz REST API)
-    vobiz_num_res = await _vobiz_api_request(
-        method="POST",
-        endpoint=f"numbers/{phone_number.strip().lstrip('+')}/inbound-trunk" if vobiz_trunk_id else "phone-numbers/assign",
-        base_url=base_url,
-        username=username,
-        password=password,
-        payload={
-            "phone_number": phone_number.strip().lstrip("+"),
-            "inbound_trunk_id": vobiz_trunk_id,
-            "destination_sip_uri": livekit_sip_uri,
-        }
-    )
+    logger.info("ℹ️ Automated Inbound Provisioning is disabled — preserving existing SIP configuration.")
 
     result_summary = {
-        "status": "success",
+        "status": "disabled",
+        "message": "Automated inbound re-provisioning is disabled to preserve manual Vobiz SIP routing.",
         "phone_number": phone_number,
         "phone_variants_registered": phone_variants,
         "livekit": {
@@ -762,31 +653,9 @@ async def setup_automated_inbound_pipeline(
         },
         "vobiz": {
             "api_base_url": base_url,
-            "trunk_creation": vobiz_trunk_res,
-            "number_assignment": vobiz_num_res,
-            "vobiz_trunk_id": vobiz_trunk_id,
+            "status": "preserved_manual_config",
         },
-        "instructions": (
-            f"LiveKit SIP is configured for {phone_variants}. "
-            f"LiveKit SIP Destination URI: {livekit_sip_uri}. "
-            f"In Vobiz Portal -> Inbound Trunks: ensure destination points to '{livekit_sip_uri}'."
-        )
     }
-
-    # Save settings in DB
-    await save_settings({
-        "INBOUND_TRUNK_ID": livekit_trunk_id,
-        "INBOUND_DISPATCH_RULE_ID": livekit_rule_id,
-        "LIVEKIT_SIP_URI": livekit_sip_uri,
-    })
-    await set_setting("INBOUND_TRUNK_ID", livekit_trunk_id)
-    await set_setting("INBOUND_DISPATCH_RULE_ID", livekit_rule_id)
-    await set_setting("LIVEKIT_SIP_URI", livekit_sip_uri)
-    os.environ["INBOUND_TRUNK_ID"] = livekit_trunk_id
-    os.environ["INBOUND_DISPATCH_RULE_ID"] = livekit_rule_id
-    os.environ["LIVEKIT_SIP_URI"] = livekit_sip_uri
-
-    await log_error("server", f"Automated Inbound Provisioned for {phone_number}", json.dumps({"lk_trunk": livekit_trunk_id, "sip_uri": livekit_sip_uri}), "info")
     return result_summary
 
 
