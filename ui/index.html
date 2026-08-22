@@ -746,7 +746,7 @@ tr:last-child td { border-bottom: none; }
           <div class="form-group">
             <label>Model</label>
             <select id="ag-model">
-              <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+              <option value="gemini-2.0-flash-live-001">gemini-2.0-flash-live-001</option>
               <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025</option>
             </select>
           </div>
@@ -899,7 +899,7 @@ tr:last-child td { border-bottom: none; }
         <div class="form-group"><label>API Key</label><div class="input-with-icon"><input type="password" id="set-gemini-key"><span class="toggle-pwd" onclick="togglePwd('set-gemini-key')">👁</span></div></div>
         <div class="form-group"><label>Default Model</label>
           <select id="set-gemini-model">
-            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+            <option value="gemini-2.0-flash-live-001">gemini-2.0-flash-live-001</option>
             <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025</option>
           </select>
         </div>
@@ -1358,7 +1358,7 @@ async function loadStats() {
 
 async function loadLiveConfig() {
   const d = await api('/api/settings');
-  const model = (d.GEMINI_MODEL && d.GEMINI_MODEL.value) || 'gemini-3.1-flash-live-preview';
+  const model = (d.GEMINI_MODEL && d.GEMINI_MODEL.value) || 'gemini-2.0-flash-live-001';
   const voice = (d.GEMINI_TTS_VOICE && d.GEMINI_TTS_VOICE.value) || 'Aoede';
   const rt = (d.USE_GEMINI_REALTIME && d.USE_GEMINI_REALTIME.value) || 'true';
   $('live-config-chips').innerHTML = `

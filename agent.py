@@ -138,13 +138,13 @@ except ImportError:
 # ── Session Factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-live-001")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "Aoede")
     use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
 
     RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
 
-    # ── Optimized Silero VAD Configuration (Fast 0.4s endpointing) ───────────
+    # ── Silero VAD ───────────────────────────────────────────────────────────
     vad = None
     if silero:
         try:
@@ -160,56 +160,25 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
             except Exception:
                 pass
 
-    session_opts = {
-        "tools": tools,
-    }
-    if vad is not None:
-        session_opts["vad"] = vad
-
-    # Fast endpointing delay options (0.4s min_endpointing_delay, 1.2s max_endpointing_delay)
-    try:
-        session_opts["min_endpointing_delay"] = 0.4
-        session_opts["max_endpointing_delay"] = 1.2
-    except Exception:
-        pass
-
     if use_realtime and RealtimeClass is not None:
-        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s, min_endpointing=0.4s)", gemini_model, gemini_voice)
-        try:
-            return AgentSession(
-                llm=RealtimeClass(
-                    model=gemini_model,
-                    voice=gemini_voice,
-                    instructions=system_prompt,
-                ),
-                **session_opts,
-            )
-        except TypeError:
-            return AgentSession(
-                llm=RealtimeClass(
-                    model=gemini_model,
-                    voice=gemini_voice,
-                    instructions=system_prompt,
-                ),
-                tools=tools,
-                vad=vad,
-            )
+        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
+        return AgentSession(
+            llm=RealtimeClass(
+                model=gemini_model,
+                voice=gemini_voice,
+                instructions=system_prompt,
+            ),
+            vad=vad,
+            tools=tools,
+        )
 
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
 
-    logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS, min_endpointing=0.4s)")
+    logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS)")
     stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
     tts = _google_tts() if _google_tts else None
-    try:
-        return AgentSession(
-            stt=stt,
-            llm=_google_llm(model="gemini-2.0-flash"),
-            tts=tts,
-            **session_opts,
-        )
-    except TypeError:
-        return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=vad, tools=tools)
+    return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=vad, tools=tools)
 
 
 class OutboundAssistant(Agent):
@@ -318,17 +287,18 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
 
-    # 4. DISPATCH GREETING IMMEDIATELY ON CONNECT (Do NOT wait for user turn)
+    # 4. DISPATCH GREETING — fire-and-forget (non-blocking, no await)
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
-    try:
-        await session.generate_reply(instructions=f"Speak your opening greeting immediately to welcome the caller: '{greeting}'")
-        await _log("info", f"Instant Inbound greeting dispatched to {phone_number}")
-    except Exception as _gr_exc:
-        await _log("warning", f"Inbound greeting fallback notice: {_gr_exc}")
+
+    async def _fire_inbound_greeting():
         try:
-            await session.say(greeting, allow_interruptions=True)
-        except Exception:
-            pass
+            t0 = time.time()
+            await session.generate_reply(instructions=f"Speak your opening greeting immediately to the caller: {greeting}")
+            await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _gr_exc:
+            await _log("warning", f"Inbound greeting notice: {_gr_exc}")
+
+    asyncio.create_task(_fire_inbound_greeting())
 
     # 5. Background CRM lookup, DB logging & S3 recording (non-blocking)
     async def _bg_inbound_setup():
@@ -372,7 +342,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 
 async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                            tool_ctx, enabled_tools: list):
-    """Handle an outbound SIP call with instant greeting response on answer."""
+    """Handle an outbound SIP call. Session starts AFTER customer answers to keep WebSocket fresh."""
     phone_number    = metadata.get("phone_number")
     lead_name       = metadata.get("lead_name", "there")
     business_name   = metadata.get("business_name", "our company")
@@ -395,15 +365,8 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
                                  service_type=service_type, custom_prompt=metadata.get("system_prompt"))
     active_tools = tool_ctx.build_tool_list(enabled_tools)
-    session = _build_session(tools=active_tools, system_prompt=system_prompt)
 
-    # 1. Pre-start AI Session so Gemini WebRTC connection is ALREADY connected & warm
-    await session.start(
-        room=ctx.room,
-        agent=OutboundAssistant(instructions=system_prompt),
-    )
-
-    # Resolve SIP trunk ID
+    # 1. Resolve SIP trunk ID FIRST (before session start — avoids wasting a WebSocket)
     trunk_id = (
         (trunk_id_override if trunk_id_override and trunk_id_override.startswith("ST_") else "") or
         (os.getenv("OUTBOUND_TRUNK_ID", "").strip() if os.getenv("OUTBOUND_TRUNK_ID", "").strip().startswith("ST_") else "") or
@@ -416,12 +379,12 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         await _log("error", err_msg)
         tool_ctx.outcome = "failed"
         tool_ctx.end_reason = err_msg
-        return session, None, phone_number, lead_name, campaign_id, None
+        return None, None, phone_number, lead_name, campaign_id, None
 
     await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
     asyncio.create_task(complete_call_log(call_id, outcome="ringing", reason="Dialing customer via SIP", call_direction="outbound"))
 
-    # 2. Dial SIP participant
+    # 2. Dial SIP participant — blocks while phone rings (NO session running yet, no WebSocket wasted)
     try:
         await ctx.api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
@@ -439,25 +402,34 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
         tool_ctx.outcome = "failed"
         tool_ctx.end_reason = err_msg
-        return session, None, phone_number, lead_name, campaign_id, None
+        return None, None, phone_number, lead_name, campaign_id, None
 
-    # 3. CUSTOMER ANSWERED! DISPATCH GREETING IMMEDIATELY ON CONNECT (Do NOT wait for user turn)
+    # 3. CUSTOMER ANSWERED → Start AI Session NOW (fresh WebSocket, no staleness)
+    await _log("info", f"Customer answered {phone_number} — starting Gemini session NOW")
+    session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    await session.start(
+        room=ctx.room,
+        agent=OutboundAssistant(instructions=system_prompt),
+    )
+
+    # 4. DISPATCH GREETING — fire-and-forget (non-blocking, no await)
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
-    try:
-        await session.generate_reply(instructions=f"Speak your opening greeting immediately to welcome the customer: '{greeting}'")
-        await _log("info", f"Instant Outbound greeting dispatched to {phone_number}")
-    except Exception as _gr_exc:
-        await _log("warning", f"Outbound greeting fallback notice: {_gr_exc}")
-        try:
-            await session.say(greeting, allow_interruptions=True)
-        except Exception:
-            pass
 
-    # 4. Background tasks for DB logging & S3 recording (non-blocking)
+    async def _fire_outbound_greeting():
+        try:
+            t0 = time.time()
+            await session.generate_reply(instructions=f"Speak your opening greeting immediately to the customer: {greeting}")
+            await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _gr_exc:
+            await _log("warning", f"Outbound greeting notice: {_gr_exc}")
+
+    asyncio.create_task(_fire_outbound_greeting())
+
+    # 5. Background tasks for DB logging & S3 recording (non-blocking)
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
     asyncio.create_task(_start_recording(ctx, tool_ctx))
 
-    # 5. Wait for customer to hang up
+    # 6. Wait for customer to hang up
     await _wait_for_hangup(ctx, label="Customer")
 
     return session, call_start_time, phone_number, lead_name, campaign_id, None
@@ -507,19 +479,22 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # ── Generate call_id ─────────────────────────────────────────────────
     call_id = metadata.get("call_id") or str(uuid.uuid4())
 
-    # ── Connect to LiveKit room ──────────────────────────────────────────
-    await ctx.connect()
-    await _log("info", f"Connected to LiveKit room: {ctx.room.name} (mode: {'INBOUND' if is_inbound else 'OUTBOUND'})")
-
-    # ── Resolve enabled tools ────────────────────────────────────────────
+    # ── Connect to LiveKit room + resolve tools IN PARALLEL ────────────────
     tools_override = metadata.get("tools_override")
-    if tools_override:
-        try:
-            enabled_tools = json.loads(tools_override)
-        except Exception:
-            enabled_tools = await get_enabled_tools()
-    else:
-        enabled_tools = await get_enabled_tools()
+
+    async def _resolve_tools():
+        if tools_override:
+            try:
+                return json.loads(tools_override)
+            except Exception:
+                pass
+        return await get_enabled_tools()
+
+    _connect_result, enabled_tools = await asyncio.gather(
+        ctx.connect(auto_subscribe=agents.AutoSubscribe.AUDIO_ONLY),
+        _resolve_tools(),
+    )
+    await _log("info", f"Connected to LiveKit room: {ctx.room.name} (mode: {'INBOUND' if is_inbound else 'OUTBOUND'})")
 
     # ── Create tool context ──────────────────────────────────────────────
     phone_number = metadata.get("phone_number")
