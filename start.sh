@@ -26,7 +26,7 @@ fi
 echo "📋 Active VPS Configuration:"
 echo "   LiveKit URL:      ${LIVEKIT_URL:-[Not Set]}"
 echo "   LiveKit Key:      ${LIVEKIT_API_KEY:+[Configured (hidden)]}"
-echo "   Gemini Model:     ${GEMINI_MODEL:-gemini-2.0-flash-live-001}"
+echo "   Gemini Model:     ${GEMINI_MODEL:-gemini-3.1-flash-live-preview}"
 echo "   Gemini Voice:     ${GEMINI_TTS_VOICE:-Aoede}"
 echo "   Gemini Realtime:  ${USE_GEMINI_REALTIME:-true}"
 echo "   Supabase URL:     ${SUPABASE_URL:-[Not Set]}"
