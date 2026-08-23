@@ -66,6 +66,19 @@ logger = logging.getLogger("outbound-agent")
 SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 
 
+class PerfProfiler:
+    def __init__(self):
+        self.t0 = time.perf_counter()
+        self.last_t = self.t0
+
+    def log(self, step_name: str):
+        now = time.perf_counter()
+        step_elapsed = now - self.last_t
+        total_elapsed = now - self.t0
+        self.last_t = now
+        print(f"[PERF-PROFILE] [{step_name}] -> +{step_elapsed:.4f}s (Total Elapsed: {total_elapsed:.4f}s)", flush=True)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _log(level: str, msg: str, detail: str = "") -> None:
@@ -280,10 +293,35 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     tool_ctx.phone_number = phone_number
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    if hasattr(ctx, "perf"):
+        ctx.perf.log("T2: _build_session completed")
+
+    # Hook up T8 (agent speaking) and T9 (user speaking) listeners
+    t8_logged = False
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        nonlocal t8_logged
+        if ev.new_state == "speaking" and not t8_logged:
+            t8_logged = True
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
+
+    t9_logged = False
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        nonlocal t9_logged
+        if ev.new_state == "speaking" and not t9_logged:
+            t9_logged = True
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T9: First user speech detected by VAD")
+
     await session.start(
         room=ctx.room,
         agent=OutboundAssistant(instructions=system_prompt),
     )
+    if hasattr(ctx, "perf"):
+        ctx.perf.log("T3: session.start completed")
+
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
 
@@ -291,8 +329,12 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
 
     async def _fire_inbound_greeting():
+        if hasattr(ctx, "perf"):
+            ctx.perf.log("T6: Greeting trigger function entered")
         try:
             t0 = time.time()
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T7: generate_reply sent to Gemini")
             await session.generate_reply(instructions=f"Speak your opening greeting immediately to the caller: {greeting}")
             await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
@@ -386,6 +428,8 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 
     # 2. Dial SIP participant — blocks while phone rings (NO session running yet, no WebSocket wasted)
     try:
+        if hasattr(ctx, "perf"):
+            ctx.perf.log("T4: create_sip_participant calling")
         await ctx.api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
                 room_name=ctx.room.name,
@@ -395,6 +439,8 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 wait_until_answered=True,
             )
         )
+        if hasattr(ctx, "perf"):
+            ctx.perf.log("T4: create_sip_participant answered")
         call_start_time = time.time()
         tool_ctx._call_start_time = call_start_time
     except Exception as exc:
@@ -407,17 +453,45 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     # 3. CUSTOMER ANSWERED → Start AI Session NOW (fresh WebSocket, no staleness)
     await _log("info", f"Customer answered {phone_number} — starting Gemini session NOW")
     session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    if hasattr(ctx, "perf"):
+        ctx.perf.log("T2: _build_session completed")
+
+    # Hook up T8 (agent speaking) and T9 (user speaking) listeners
+    t8_logged = False
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        nonlocal t8_logged
+        if ev.new_state == "speaking" and not t8_logged:
+            t8_logged = True
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
+
+    t9_logged = False
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        nonlocal t9_logged
+        if ev.new_state == "speaking" and not t9_logged:
+            t9_logged = True
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T9: First user speech detected by VAD")
+
     await session.start(
         room=ctx.room,
         agent=OutboundAssistant(instructions=system_prompt),
     )
+    if hasattr(ctx, "perf"):
+        ctx.perf.log("T3: session.start completed")
 
     # 4. DISPATCH GREETING — fire-and-forget (non-blocking, no await)
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
 
     async def _fire_outbound_greeting():
+        if hasattr(ctx, "perf"):
+            ctx.perf.log("T6: Greeting trigger function entered")
         try:
             t0 = time.time()
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T7: generate_reply sent to Gemini")
             await session.generate_reply(instructions=f"Speak your opening greeting immediately to the customer: {greeting}")
             await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
@@ -440,6 +514,9 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def entrypoint(ctx: agents.JobContext) -> None:
+    ctx.perf = PerfProfiler()
+    ctx.perf.log("T0: entrypoint triggered")
+
     logger.info("═══ JOB RECEIVED ═══ id=%s room=%s metadata=%s",
                 ctx.job.id, ctx.room.name, ctx.job.metadata)
     await _log("info", f"JOB RECEIVED: {ctx.job.id} — room: {ctx.room.name} — metadata: {ctx.job.metadata}")
@@ -479,6 +556,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # ── Generate call_id ─────────────────────────────────────────────────
     call_id = metadata.get("call_id") or str(uuid.uuid4())
 
+    # ── Register track_subscribed listener for T5 ──────────────────────────
+    t5_logged = False
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track: rtc.Track, publication: rtc.TrackPublication, participant: rtc.RemoteParticipant):
+        nonlocal t5_logged
+        if track.kind == rtc.TrackKind.KIND_AUDIO and not t5_logged:
+            t5_logged = True
+            if hasattr(ctx, "perf"):
+                ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
+
     # ── Connect to LiveKit room + resolve tools IN PARALLEL ────────────────
     tools_override = metadata.get("tools_override")
 
@@ -494,6 +581,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         ctx.connect(auto_subscribe=agents.AutoSubscribe.AUDIO_ONLY),
         _resolve_tools(),
     )
+    ctx.perf.log("T1: connect completed")
     await _log("info", f"Connected to LiveKit room: {ctx.room.name} (mode: {'INBOUND' if is_inbound else 'OUTBOUND'})")
 
     # ── Create tool context ──────────────────────────────────────────────
