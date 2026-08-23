@@ -180,12 +180,14 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
+        tts = _google_tts() if _google_tts else None
         return AgentSession(
             llm=RealtimeClass(
                 model=gemini_model,
                 voice=gemini_voice,
                 instructions=system_prompt,
             ),
+            tts=tts,
             vad=vad,
             tools=tools,
         )
@@ -311,12 +313,18 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             ctx.perf.log("T6: Greeting trigger function entered")
         try:
             t0 = time.time()
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                user_input="Hi",
-                instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
-            )
+            gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+            if "3.1" in gemini_model:
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T7: Using local TTS fallback for Gemini 3.1 greeting")
+                await session.say(greeting, allow_interruptions=True)
+            else:
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T7: generate_reply sent to Gemini")
+                await session.generate_reply(
+                    user_input="Hi",
+                    instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
+                )
             await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
             await _log("warning", f"Inbound greeting notice: {_gr_exc}")
@@ -480,12 +488,18 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             ctx.perf.log("T6: Greeting trigger function entered")
         try:
             t0 = time.time()
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                user_input="Hi",
-                instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
-            )
+            gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+            if "3.1" in gemini_model:
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T7: Using local TTS fallback for Gemini 3.1 greeting")
+                await session.say(greeting, allow_interruptions=True)
+            else:
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T7: generate_reply sent to Gemini")
+                await session.generate_reply(
+                    user_input="Hi",
+                    instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
+                )
             await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
             await _log("warning", f"Outbound greeting notice: {_gr_exc}")
