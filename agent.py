@@ -340,7 +340,10 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             t0 = time.time()
             if hasattr(ctx, "perf"):
                 ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(instructions=f"Speak your opening greeting immediately to the caller: {greeting}")
+            await session.generate_reply(
+                user_input="Hi",
+                instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
+            )
             await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
             await _log("warning", f"Inbound greeting notice: {_gr_exc}")
@@ -497,7 +500,10 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             t0 = time.time()
             if hasattr(ctx, "perf"):
                 ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(instructions=f"Speak your opening greeting immediately to the customer: {greeting}")
+            await session.generate_reply(
+                user_input="Hi",
+                instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
+            )
             await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
             await _log("warning", f"Outbound greeting notice: {_gr_exc}")
