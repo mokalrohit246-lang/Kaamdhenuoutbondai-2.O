@@ -76,7 +76,12 @@ class PerfProfiler:
         step_elapsed = now - self.last_t
         total_elapsed = now - self.t0
         self.last_t = now
-        print(f"[PERF-PROFILE] [{step_name}] -> +{step_elapsed:.4f}s (Total Elapsed: {total_elapsed:.4f}s)", flush=True)
+        msg = f"[PERF-PROFILE] [{step_name}] -> +{step_elapsed:.4f}s (Total Elapsed: {total_elapsed:.4f}s)"
+        print(msg, flush=True)
+        try:
+            asyncio.create_task(_log("info", msg))
+        except Exception:
+            pass
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
