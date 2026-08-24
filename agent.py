@@ -335,21 +335,27 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. DISPATCH GREETING — directly after session.start (documented LiveKit pattern)
-    #    No user_input: avoids injecting a text turn that conflicts with audio-first sessions
+    # 4. DISPATCH GREETING — try session.say() first to force immediate speech output
     async def _fire_inbound_greeting():
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
+        t0 = time.time()
         try:
-            t0 = time.time()
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                instructions=f"Greet the caller immediately by saying: {greeting}"
-            )
-            await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _gr_exc:
-            await _log("warning", f"Inbound greeting notice: {_gr_exc}")
+                ctx.perf.log("T7: session.say sent")
+            await session.say(greeting)
+            await _log("info", f"Inbound greeting spoken via session.say to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _say_exc:
+            await _log("info", f"session.say notice ({_say_exc}), falling back to generate_reply")
+            try:
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T7: generate_reply fallback sent")
+                await session.generate_reply(
+                    instructions=f"Greet the caller immediately by saying: {greeting}"
+                )
+                await _log("info", f"Inbound greeting dispatched via generate_reply to {phone_number} in {time.time()-t0:.2f}s")
+            except Exception as _gr_exc:
+                await _log("warning", f"Inbound greeting fallback notice: {_gr_exc}")
 
     asyncio.create_task(_fire_inbound_greeting())
 
@@ -500,20 +506,27 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. DISPATCH GREETING — directly after session.start (documented LiveKit pattern)
+    # 4. DISPATCH GREETING — try session.say() first to force immediate speech output
     async def _fire_outbound_greeting():
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
+        t0 = time.time()
         try:
-            t0 = time.time()
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                instructions=f"Greet the customer immediately by saying: {greeting}"
-            )
-            await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _gr_exc:
-            await _log("warning", f"Outbound greeting notice: {_gr_exc}")
+                ctx.perf.log("T7: session.say sent")
+            await session.say(greeting)
+            await _log("info", f"Outbound greeting spoken via session.say to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _say_exc:
+            await _log("info", f"session.say notice ({_say_exc}), falling back to generate_reply")
+            try:
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T7: generate_reply fallback sent")
+                await session.generate_reply(
+                    instructions=f"Greet the customer immediately by saying: {greeting}"
+                )
+                await _log("info", f"Outbound greeting dispatched via generate_reply to {phone_number} in {time.time()-t0:.2f}s")
+            except Exception as _gr_exc:
+                await _log("warning", f"Outbound greeting fallback notice: {_gr_exc}")
 
     asyncio.create_task(_fire_outbound_greeting())
 
