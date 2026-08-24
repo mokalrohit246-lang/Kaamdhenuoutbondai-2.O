@@ -170,6 +170,22 @@ if silero:
             pass
 
 
+# ── Chat Context Helper ──────────────────────────────────────────────────────
+
+def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatContext:
+    init_ctx = llm.ChatContext()
+    try:
+        init_ctx.add_message(role="system", content=system_prompt)
+        init_ctx.add_message(role="user", content=user_text)
+    except Exception:
+        try:
+            init_ctx.add_message(role="system", text=system_prompt)
+            init_ctx.add_message(role="user", text=user_text)
+        except Exception:
+            pass
+    return init_ctx
+
+
 # ── Session Factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
@@ -344,9 +360,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             if hasattr(ctx, "perf"):
                 ctx.perf.log("T7: generate_reply with ChatContext sent")
             
-            init_ctx = llm.ChatContext()
-            init_ctx.append(role="system", text=system_prompt)
-            init_ctx.append(role="user", text="Hello, I am calling.")
+            init_ctx = _build_initial_chat_context(system_prompt, "Hello, I am calling.")
 
             await session.generate_reply(
                 chat_ctx=init_ctx,
@@ -514,9 +528,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             if hasattr(ctx, "perf"):
                 ctx.perf.log("T7: generate_reply with ChatContext sent")
             
-            init_ctx = llm.ChatContext()
-            init_ctx.append(role="system", text=system_prompt)
-            init_ctx.append(role="user", text="Hello?")
+            init_ctx = _build_initial_chat_context(system_prompt, "Hello?")
 
             await session.generate_reply(
                 chat_ctx=init_ctx,
