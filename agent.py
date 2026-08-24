@@ -199,7 +199,7 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS)")
     stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
-    tts = _google_tts() if _google_tts else None
+    tts = _google_tts(voice=gemini_voice) if _google_tts else None
     return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=vad, tools=tools)
 
 
