@@ -200,14 +200,12 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
-        tts = _google_tts(voice=gemini_voice) if _google_tts else None
         return AgentSession(
             llm=RealtimeClass(
                 model=gemini_model,
                 voice=gemini_voice,
                 instructions=system_prompt,
             ),
-            tts=tts,
             vad=vad,
             tools=tools,
         )
@@ -217,7 +215,15 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS)")
     stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
-    tts = _google_tts(voice=gemini_voice) if _google_tts else None
+    tts = None
+    if _google_tts:
+        try:
+            tts = _google_tts(voice_name=gemini_voice)
+        except Exception:
+            try:
+                tts = _google_tts()
+            except Exception:
+                pass
     return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=vad, tools=tools)
 
 
@@ -353,27 +359,22 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. INSTANT GREETING DISPATCH — Speak predefined greeting immediately via session.say (< 150ms)
+    # 4. INSTANT GREETING DISPATCH — seed ChatContext with initial user turn so Gemini triggers speech immediately
     async def _fire_inbound_greeting():
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
         t0 = time.time()
         try:
+            init_ctx = _build_initial_chat_context(system_prompt, "Hello, I am calling.")
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: Instant TTS session.say sent")
-            await session.say(greeting)
-            await _log("info", f"Inbound instant greeting spoken via session.say to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _say_exc:
-            await _log("info", f"session.say notice ({_say_exc}), falling back to generate_reply with ChatContext")
-            try:
-                init_ctx = _build_initial_chat_context(system_prompt, "Hello, I am calling.")
-                await session.generate_reply(
-                    chat_ctx=init_ctx,
-                    instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
-                )
-                await _log("info", f"Inbound greeting dispatched via generate_reply to {phone_number} in {time.time()-t0:.2f}s")
-            except Exception as _gr_exc:
-                await _log("warning", f"Inbound greeting fallback notice: {_gr_exc}")
+                ctx.perf.log("T7: generate_reply with ChatContext sent")
+            await session.generate_reply(
+                chat_ctx=init_ctx,
+                instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
+            )
+            await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _gr_exc:
+            await _log("warning", f"Inbound greeting notice: {_gr_exc}")
 
     asyncio.create_task(_fire_inbound_greeting())
 
