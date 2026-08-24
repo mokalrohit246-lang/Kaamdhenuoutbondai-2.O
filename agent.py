@@ -367,38 +367,43 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. FIRST-TURN AUTO-GREETING DISPATCH — force opening speech turn
-    async def _fire_inbound_greeting():
+    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers only once per call
+    greeting_fired = False
+
+    async def _speak_opening():
+        nonlocal greeting_fired
+        if greeting_fired:
+            return
+        greeting_fired = True
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
-        t0 = time.time()
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: conversation.item.create / response.create sent")
+                ctx.perf.log("T7: generate_reply sent to Gemini")
+            await session.generate_reply(
+                instructions=f"Speak your opening greeting immediately to welcome the caller: {greeting}"
+            )
+            await _log("info", f"Opening greeting successfully dispatched to {phone_number}")
+        except Exception as exc:
+            await _log("error", f"generate_reply failed: {exc}")
 
-            if hasattr(session, "conversation") and hasattr(session.conversation, "item"):
-                await session.conversation.item.create(
-                    llm.ChatMessage(
-                        role="user",
-                        content="[System: Call connected. Speak your opening greeting to the caller right now without waiting.]"
-                    )
-                )
-                if hasattr(session, "response") and hasattr(session.response, "create"):
-                    await session.response.create()
-                else:
-                    await session.generate_reply(
-                        instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
-                    )
-            else:
-                await session.generate_reply(
-                    user_input="[System: Call connected. Speak your opening greeting to the caller right now without waiting.]",
-                    instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
-                )
-            await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _gr_exc:
-            await _log("warning", f"Inbound greeting notice: {_gr_exc}")
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track, publication, participant):
+        if track.kind == rtc.TrackKind.KIND_AUDIO:
+            if hasattr(ctx, "perf"):
+                ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
+            asyncio.create_task(_speak_opening())
 
-    asyncio.create_task(_fire_inbound_greeting())
+    # Trigger immediately if remote participant / audio track is already present
+    audio_present = False
+    for participant in ctx.room.remote_participants.values():
+        for pub in participant.track_publications.values():
+            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
+                audio_present = True
+                break
+
+    if audio_present or len(ctx.room.remote_participants) > 0:
+        asyncio.create_task(_speak_opening())
 
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
@@ -547,38 +552,43 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. FIRST-TURN AUTO-GREETING DISPATCH — force opening speech turn
-    async def _fire_outbound_greeting():
+    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers only once per call
+    greeting_fired = False
+
+    async def _speak_opening():
+        nonlocal greeting_fired
+        if greeting_fired:
+            return
+        greeting_fired = True
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
-        t0 = time.time()
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: conversation.item.create / response.create sent")
+                ctx.perf.log("T7: generate_reply sent to Gemini")
+            await session.generate_reply(
+                instructions=f"Speak your opening greeting immediately to welcome the customer: {greeting}"
+            )
+            await _log("info", f"Opening greeting successfully dispatched to {phone_number}")
+        except Exception as exc:
+            await _log("error", f"generate_reply failed: {exc}")
 
-            if hasattr(session, "conversation") and hasattr(session.conversation, "item"):
-                await session.conversation.item.create(
-                    llm.ChatMessage(
-                        role="user",
-                        content="[System: Call connected. Speak your opening greeting to the customer right now without waiting.]"
-                    )
-                )
-                if hasattr(session, "response") and hasattr(session.response, "create"):
-                    await session.response.create()
-                else:
-                    await session.generate_reply(
-                        instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
-                    )
-            else:
-                await session.generate_reply(
-                    user_input="[System: Call connected. Speak your opening greeting to the customer right now without waiting.]",
-                    instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
-                )
-            await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _gr_exc:
-            await _log("warning", f"Outbound greeting notice: {_gr_exc}")
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track, publication, participant):
+        if track.kind == rtc.TrackKind.KIND_AUDIO:
+            if hasattr(ctx, "perf"):
+                ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
+            asyncio.create_task(_speak_opening())
 
-    asyncio.create_task(_fire_outbound_greeting())
+    # Trigger immediately if remote participant / audio track is already present
+    audio_present = False
+    for participant in ctx.room.remote_participants.values():
+        for pub in participant.track_publications.values():
+            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
+                audio_present = True
+                break
+
+    if audio_present or len(ctx.room.remote_participants) > 0:
+        asyncio.create_task(_speak_opening())
 
     # 5. Background tasks for DB logging & S3 recording (non-blocking)
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
