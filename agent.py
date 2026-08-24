@@ -153,6 +153,23 @@ except ImportError:
     pass
 
 
+# ── Global VAD Preloading ───────────────────────────────────────────────────
+GLOBAL_VAD = None
+if silero:
+    try:
+        GLOBAL_VAD = silero.VAD.load(
+            min_speech_duration=0.05,
+            min_silence_duration=0.3,
+            prefix_padding_duration=0.2,
+            max_buffered_speech=5.0,
+        )
+    except Exception:
+        try:
+            GLOBAL_VAD = silero.VAD.load()
+        except Exception:
+            pass
+
+
 # ── Session Factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
@@ -162,21 +179,8 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
 
     RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
 
-    # ── Silero VAD ───────────────────────────────────────────────────────────
-    vad = None
-    if silero:
-        try:
-            vad = silero.VAD.load(
-                min_speech_duration=0.05,
-                min_silence_duration=0.3,
-                prefix_padding_duration=0.2,
-                max_buffered_speech=5.0,
-            )
-        except Exception:
-            try:
-                vad = silero.VAD.load()
-            except Exception:
-                pass
+    # Use preloaded global VAD to save CPU time during call setup
+    vad = GLOBAL_VAD
 
     if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
@@ -301,11 +305,37 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T2: _build_session completed")
 
-    # Hook up T8 (agent speaking) and T9 (user speaking) listeners
+    # Hook up agent state changed, T8, and user state changed T9 listeners
     t8_logged = False
+    greeting_triggered = False
+    greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
+
+    async def _fire_inbound_greeting():
+        if hasattr(ctx, "perf"):
+            ctx.perf.log("T6: Greeting trigger function entered")
+        try:
+            t0 = time.time()
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T7: generate_reply sent to Gemini")
+            await session.generate_reply(
+                user_input="Hi",
+                instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
+            )
+            await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _gr_exc:
+            await _log("warning", f"Inbound greeting notice: {_gr_exc}")
+
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
-        nonlocal t8_logged
+        nonlocal t8_logged, greeting_triggered
+        if hasattr(ctx, "perf"):
+            ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
+        
+        # Trigger greeting once connected and listening
+        if ev.new_state == "listening" and not greeting_triggered:
+            greeting_triggered = True
+            asyncio.create_task(_fire_inbound_greeting())
+
         if ev.new_state == "speaking" and not t8_logged:
             t8_logged = True
             if hasattr(ctx, "perf"):
@@ -329,26 +359,6 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
-
-    # 4. DISPATCH GREETING — fire-and-forget (non-blocking, no await)
-    greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
-
-    async def _fire_inbound_greeting():
-        if hasattr(ctx, "perf"):
-            ctx.perf.log("T6: Greeting trigger function entered")
-        try:
-            t0 = time.time()
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                user_input="Hi",
-                instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
-            )
-            await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _gr_exc:
-            await _log("warning", f"Inbound greeting notice: {_gr_exc}")
-
-    asyncio.create_task(_fire_inbound_greeting())
 
     # 5. Background CRM lookup, DB logging & S3 recording (non-blocking)
     async def _bg_inbound_setup():
@@ -464,11 +474,37 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T2: _build_session completed")
 
-    # Hook up T8 (agent speaking) and T9 (user speaking) listeners
+    # Hook up agent state changed, T8, and user state changed T9 listeners
     t8_logged = False
+    greeting_triggered = False
+    greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
+
+    async def _fire_outbound_greeting():
+        if hasattr(ctx, "perf"):
+            ctx.perf.log("T6: Greeting trigger function entered")
+        try:
+            t0 = time.time()
+            if hasattr(ctx, "perf"):
+                ctx.perf.log("T7: generate_reply sent to Gemini")
+            await session.generate_reply(
+                user_input="Hi",
+                instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
+            )
+            await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _gr_exc:
+            await _log("warning", f"Outbound greeting notice: {_gr_exc}")
+
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
-        nonlocal t8_logged
+        nonlocal t8_logged, greeting_triggered
+        if hasattr(ctx, "perf"):
+            ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
+        
+        # Trigger greeting once connected and listening
+        if ev.new_state == "listening" and not greeting_triggered:
+            greeting_triggered = True
+            asyncio.create_task(_fire_outbound_greeting())
+
         if ev.new_state == "speaking" and not t8_logged:
             t8_logged = True
             if hasattr(ctx, "perf"):
@@ -489,26 +525,6 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     )
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
-
-    # 4. DISPATCH GREETING — fire-and-forget (non-blocking, no await)
-    greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
-
-    async def _fire_outbound_greeting():
-        if hasattr(ctx, "perf"):
-            ctx.perf.log("T6: Greeting trigger function entered")
-        try:
-            t0 = time.time()
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                user_input="Hi",
-                instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
-            )
-            await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _gr_exc:
-            await _log("warning", f"Outbound greeting notice: {_gr_exc}")
-
-    asyncio.create_task(_fire_outbound_greeting())
 
     # 5. Background tasks for DB logging & S3 recording (non-blocking)
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
