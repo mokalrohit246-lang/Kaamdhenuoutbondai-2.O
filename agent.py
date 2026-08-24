@@ -159,15 +159,23 @@ if silero:
     try:
         GLOBAL_VAD = silero.VAD.load(
             min_speech_duration=0.05,
-            min_silence_duration=0.25,
-            prefix_padding_duration=0.1,
-            max_buffered_speech=3.0,
+            min_silence_duration=0.2,
+            prefix_padding_duration=0.05,
+            max_buffered_speech=2.0,
+            activation_threshold=0.5,
         )
     except Exception:
         try:
-            GLOBAL_VAD = silero.VAD.load()
+            GLOBAL_VAD = silero.VAD.load(
+                min_speech_duration=0.05,
+                min_silence_duration=0.2,
+                prefix_padding_duration=0.05,
+            )
         except Exception:
-            pass
+            try:
+                GLOBAL_VAD = silero.VAD.load()
+            except Exception:
+                pass
 
 
 # ── Chat Context Helper ──────────────────────────────────────────────────────
@@ -359,19 +367,33 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. INSTANT GREETING DISPATCH — seed ChatContext with initial user turn so Gemini triggers speech immediately
+    # 4. FIRST-TURN AUTO-GREETING DISPATCH — force opening speech turn
     async def _fire_inbound_greeting():
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
         t0 = time.time()
         try:
-            init_ctx = _build_initial_chat_context(system_prompt, "Hello, I am calling.")
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply with ChatContext sent")
-            await session.generate_reply(
-                chat_ctx=init_ctx,
-                instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
-            )
+                ctx.perf.log("T7: conversation.item.create / response.create sent")
+
+            if hasattr(session, "conversation") and hasattr(session.conversation, "item"):
+                await session.conversation.item.create(
+                    llm.ChatMessage(
+                        role="user",
+                        content="[System: Call connected. Speak your opening greeting to the caller right now without waiting.]"
+                    )
+                )
+                if hasattr(session, "response") and hasattr(session.response, "create"):
+                    await session.response.create()
+                else:
+                    await session.generate_reply(
+                        instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
+                    )
+            else:
+                await session.generate_reply(
+                    user_input="[System: Call connected. Speak your opening greeting to the caller right now without waiting.]",
+                    instructions=f"Speak your opening greeting immediately to the caller: {greeting}"
+                )
             await _log("info", f"Inbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
         except Exception as _gr_exc:
             await _log("warning", f"Inbound greeting notice: {_gr_exc}")
@@ -525,27 +547,36 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. INSTANT GREETING DISPATCH — Speak predefined greeting immediately via session.say (< 150ms)
+    # 4. FIRST-TURN AUTO-GREETING DISPATCH — force opening speech turn
     async def _fire_outbound_greeting():
         if hasattr(ctx, "perf"):
             ctx.perf.log("T6: Greeting trigger function entered")
         t0 = time.time()
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: Instant TTS session.say sent")
-            await session.say(greeting)
-            await _log("info", f"Outbound instant greeting spoken via session.say to {phone_number} in {time.time()-t0:.2f}s")
-        except Exception as _say_exc:
-            await _log("info", f"session.say notice ({_say_exc}), falling back to generate_reply with ChatContext")
-            try:
-                init_ctx = _build_initial_chat_context(system_prompt, "Hello?")
+                ctx.perf.log("T7: conversation.item.create / response.create sent")
+
+            if hasattr(session, "conversation") and hasattr(session.conversation, "item"):
+                await session.conversation.item.create(
+                    llm.ChatMessage(
+                        role="user",
+                        content="[System: Call connected. Speak your opening greeting to the customer right now without waiting.]"
+                    )
+                )
+                if hasattr(session, "response") and hasattr(session.response, "create"):
+                    await session.response.create()
+                else:
+                    await session.generate_reply(
+                        instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
+                    )
+            else:
                 await session.generate_reply(
-                    chat_ctx=init_ctx,
+                    user_input="[System: Call connected. Speak your opening greeting to the customer right now without waiting.]",
                     instructions=f"Speak your opening greeting immediately to the customer: {greeting}"
                 )
-                await _log("info", f"Outbound greeting dispatched via generate_reply to {phone_number} in {time.time()-t0:.2f}s")
-            except Exception as _gr_exc:
-                await _log("warning", f"Outbound greeting fallback notice: {_gr_exc}")
+            await _log("info", f"Outbound greeting dispatched to {phone_number} in {time.time()-t0:.2f}s")
+        except Exception as _gr_exc:
+            await _log("warning", f"Outbound greeting notice: {_gr_exc}")
 
     asyncio.create_task(_fire_outbound_greeting())
 
