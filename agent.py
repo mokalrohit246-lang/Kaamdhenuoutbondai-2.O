@@ -197,17 +197,38 @@ def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatC
 # ── Session Factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "Aoede")
+    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
+    deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
-    # Use preloaded global VAD to save CPU time during call setup
+    RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
     vad = GLOBAL_VAD
+
+    # Fallback to Gemini Live Realtime if Realtime enabled OR if Deepgram API key is missing
+    if (use_realtime or not deepgram_key) and RealtimeClass is not None:
+        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
+        return AgentSession(
+            llm=RealtimeClass(
+                model=gemini_model,
+                voice=gemini_voice,
+                instructions=system_prompt,
+            ),
+            vad=vad,
+            tools=tools,
+        )
 
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
 
     logger.info("SESSION MODE: Modular Pipeline (Deepgram STT + Gemini LLM + Google TTS)")
-    stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
+    stt = None
+    if _deepgram_stt and deepgram_key:
+        try:
+            stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
+        except Exception as stt_exc:
+            logger.warning("Deepgram STT initialization notice: %s", stt_exc)
+
     tts = None
     if _google_tts:
         try:
@@ -371,11 +392,16 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             ctx.perf.log("T6: Speak-first greeting trigger entered")
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: session.say sent")
-            await session.say(greeting, allow_interruptions=True)
+                ctx.perf.log("T7: Opening greeting sent")
+            if getattr(session, "tts", None) is not None:
+                await session.say(greeting, allow_interruptions=True)
+            else:
+                await session.generate_reply(
+                    instructions=f"Speak your opening greeting immediately to welcome the caller: {greeting}"
+                )
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            await _log("error", f"session.say failed: {exc}")
+            await _log("error", f"Opening greeting notice: {exc}")
             try:
                 await session.generate_reply(
                     instructions=f"Speak your opening greeting immediately: {greeting}"
@@ -552,11 +578,16 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             ctx.perf.log("T6: Speak-first greeting trigger entered")
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: session.say sent")
-            await session.say(greeting, allow_interruptions=True)
+                ctx.perf.log("T7: Opening greeting sent")
+            if getattr(session, "tts", None) is not None:
+                await session.say(greeting, allow_interruptions=True)
+            else:
+                await session.generate_reply(
+                    instructions=f"Speak your opening greeting immediately to welcome the customer: {greeting}"
+                )
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            await _log("error", f"session.say failed: {exc}")
+            await _log("error", f"Opening greeting notice: {exc}")
             try:
                 await session.generate_reply(
                     instructions=f"Speak your opening greeting immediately: {greeting}"
