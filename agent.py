@@ -206,6 +206,16 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
     # Use preloaded global VAD to save CPU time during call setup
     vad = GLOBAL_VAD
 
+    tts_engine = None
+    if _google_tts:
+        try:
+            tts_engine = _google_tts(voice_name=gemini_voice)
+        except Exception:
+            try:
+                tts_engine = _google_tts()
+            except Exception:
+                pass
+
     if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
         return AgentSession(
@@ -214,6 +224,7 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 voice=gemini_voice,
                 instructions=system_prompt,
             ),
+            tts=tts_engine,
             vad=vad,
             tools=tools,
         )
@@ -367,7 +378,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers only once per call
+    # 4. TURN-0 SPEAK-FIRST ARCHITECTURE — Agent initiates conversation immediately
     greeting_fired = False
 
     async def _speak_opening():
@@ -376,16 +387,20 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             return
         greeting_fired = True
         if hasattr(ctx, "perf"):
-            ctx.perf.log("T6: Greeting trigger function entered")
+            ctx.perf.log("T6: Speak-first greeting trigger entered")
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                instructions=f"Speak your opening greeting immediately to welcome the caller: {greeting}"
-            )
-            await _log("info", f"Opening greeting successfully dispatched to {phone_number}")
+                ctx.perf.log("T7: session.say sent")
+            await session.say(greeting, allow_interruptions=True)
+            await _log("info", f"Agent initiated conversation to {phone_number}")
         except Exception as exc:
-            await _log("error", f"generate_reply failed: {exc}")
+            await _log("error", f"Speak-first greeting failed: {exc}")
+            try:
+                await session.generate_reply(
+                    instructions=f"Speak your opening greeting immediately to welcome the caller: {greeting}"
+                )
+            except Exception:
+                pass
 
     @ctx.room.on("track_subscribed")
     def on_track_subscribed(track, publication, participant):
@@ -394,16 +409,8 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
             asyncio.create_task(_speak_opening())
 
-    # Trigger immediately if remote participant / audio track is already present
-    audio_present = False
-    for participant in ctx.room.remote_participants.values():
-        for pub in participant.track_publications.values():
-            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
-                audio_present = True
-                break
-
-    if audio_present or len(ctx.room.remote_participants) > 0:
-        asyncio.create_task(_speak_opening())
+    # Trigger immediately after session.start()
+    asyncio.create_task(_speak_opening())
 
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
@@ -552,7 +559,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers only once per call
+    # 4. TURN-0 SPEAK-FIRST ARCHITECTURE — Agent initiates conversation immediately on customer answer
     greeting_fired = False
 
     async def _speak_opening():
@@ -561,16 +568,20 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             return
         greeting_fired = True
         if hasattr(ctx, "perf"):
-            ctx.perf.log("T6: Greeting trigger function entered")
+            ctx.perf.log("T6: Speak-first greeting trigger entered")
         try:
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: generate_reply sent to Gemini")
-            await session.generate_reply(
-                instructions=f"Speak your opening greeting immediately to welcome the customer: {greeting}"
-            )
-            await _log("info", f"Opening greeting successfully dispatched to {phone_number}")
+                ctx.perf.log("T7: session.say sent")
+            await session.say(greeting, allow_interruptions=True)
+            await _log("info", f"Agent initiated conversation to {phone_number}")
         except Exception as exc:
-            await _log("error", f"generate_reply failed: {exc}")
+            await _log("error", f"Speak-first greeting failed: {exc}")
+            try:
+                await session.generate_reply(
+                    instructions=f"Speak your opening greeting immediately to welcome the customer: {greeting}"
+                )
+            except Exception:
+                pass
 
     @ctx.room.on("track_subscribed")
     def on_track_subscribed(track, publication, participant):
@@ -579,16 +590,8 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
             asyncio.create_task(_speak_opening())
 
-    # Trigger immediately if remote participant / audio track is already present
-    audio_present = False
-    for participant in ctx.room.remote_participants.values():
-        for pub in participant.track_publications.values():
-            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
-                audio_present = True
-                break
-
-    if audio_present or len(ctx.room.remote_participants) > 0:
-        asyncio.create_task(_speak_opening())
+    # Trigger the exact millisecond customer answers / session.start finishes
+    asyncio.create_task(_speak_opening())
 
     # 5. Background tasks for DB logging & S3 recording (non-blocking)
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
