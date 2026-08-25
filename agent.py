@@ -161,8 +161,8 @@ if silero:
             min_speech_duration=0.15,
             min_silence_duration=0.30,
             prefix_padding_duration=0.10,
+            activation_threshold=0.60,
             max_buffered_speech=2.0,
-            activation_threshold=0.5,
         )
     except Exception:
         try:
@@ -170,6 +170,7 @@ if silero:
                 min_speech_duration=0.15,
                 min_silence_duration=0.30,
                 prefix_padding_duration=0.10,
+                activation_threshold=0.60,
             )
         except Exception:
             try:
