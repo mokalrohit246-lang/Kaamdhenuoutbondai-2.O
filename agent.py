@@ -199,14 +199,14 @@ def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatC
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "Aoede")
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
+    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
-    RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
+    RealtimeClass = _google_realtime or _google_beta_realtime
     vad = GLOBAL_VAD
 
-    # Fallback to Gemini Live Realtime ONLY if use_realtime is explicitly True OR if DEEPGRAM_API_KEY is completely empty
-    if (use_realtime or not deepgram_key) and RealtimeClass is not None:
+    # Prioritize Gemini Live Realtime WebSocket
+    if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
         try:
             realtime_llm = RealtimeClass(
@@ -215,10 +215,13 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 instructions=system_prompt,
             )
         except Exception:
-            realtime_llm = RealtimeClass(
-                model=gemini_model,
-                voice=gemini_voice,
-            )
+            try:
+                realtime_llm = RealtimeClass(
+                    model=gemini_model,
+                    voice=gemini_voice,
+                )
+            except Exception:
+                realtime_llm = RealtimeClass(model=gemini_model)
         return AgentSession(
             llm=realtime_llm,
             vad=vad,
@@ -407,7 +410,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 await session.say(greeting, allow_interruptions=False)
             else:
                 await session.generate_reply(
-                    instructions=f"Speak opening greeting immediately: {greeting}",
+                    instructions=f"Say your opening greeting in natural Hindi immediately: {greeting}",
                     allow_interruptions=False
                 )
             await _log("info", f"Opening greeting spoken to {phone_number}")
@@ -586,7 +589,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 await session.say(greeting, allow_interruptions=False)
             else:
                 await session.generate_reply(
-                    instructions=f"Speak opening greeting immediately: {greeting}",
+                    instructions=f"Say your opening greeting in natural Hindi immediately: {greeting}",
                     allow_interruptions=False
                 )
             await _log("info", f"Opening greeting spoken to {phone_number}")
