@@ -197,15 +197,15 @@ def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatC
 # ── Session Factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "Aoede")
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
+    use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
     RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
     vad = GLOBAL_VAD
 
-    # Fallback to Gemini Live Realtime if Realtime enabled OR if Deepgram API key is missing
+    # Fallback to Gemini Live Realtime ONLY if use_realtime is explicitly True OR if DEEPGRAM_API_KEY is completely empty
     if (use_realtime or not deepgram_key) and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
         return AgentSession(
@@ -221,11 +221,17 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
 
-    logger.info("SESSION MODE: Modular Pipeline (Deepgram STT + Gemini LLM + Google TTS)")
+    logger.info("SESSION MODE: Modular Pipeline (Deepgram STT + Gemini Flash LLM + Google TTS)")
     stt = None
     if _deepgram_stt and deepgram_key:
         try:
-            stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
+            stt = _deepgram_stt(
+                api_key=deepgram_key,
+                model="nova-3",
+                language="multi",
+                endpointing=0.30,
+                interim_results=True,
+            )
         except Exception as stt_exc:
             logger.warning("Deepgram STT initialization notice: %s", stt_exc)
 
@@ -380,7 +386,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers only once per call
+    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers once audio track is locked
     greeting_fired = False
 
     async def _speak_opening():
@@ -388,36 +394,29 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         if greeting_fired:
             return
         greeting_fired = True
-        if hasattr(ctx, "perf"):
-            ctx.perf.log("T6: Speak-first greeting trigger entered")
         try:
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: Opening greeting sent")
+            await asyncio.sleep(0.4)
             if getattr(session, "tts", None) is not None:
-                await session.say(greeting, allow_interruptions=True)
+                await session.say(greeting, allow_interruptions=False)
             else:
                 await session.generate_reply(
-                    instructions=f"Speak your opening greeting immediately to welcome the caller: {greeting}"
+                    instructions=f"Speak opening greeting immediately: {greeting}",
+                    allow_interruptions=False
                 )
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            await _log("error", f"Opening greeting notice: {exc}")
-            try:
-                await session.generate_reply(
-                    instructions=f"Speak your opening greeting immediately: {greeting}"
-                )
-            except Exception:
-                pass
+            await _log("error", f"Failed to speak opening greeting: {exc}")
 
     @ctx.room.on("track_subscribed")
-    def on_track_subscribed(track, publication, participant):
+    def on_track_subscribed(track: rtc.Track, publication: rtc.TrackPublication, participant: rtc.RemoteParticipant):
         if track.kind == rtc.TrackKind.KIND_AUDIO:
-            if hasattr(ctx, "perf"):
-                ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
             asyncio.create_task(_speak_opening())
 
-    # Trigger immediately after session.start()
-    asyncio.create_task(_speak_opening())
+    for p in ctx.room.remote_participants.values():
+        for pub in p.track_publications.values():
+            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
+                asyncio.create_task(_speak_opening())
+                break
 
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
@@ -566,7 +565,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
-    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers only once per call
+    # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers once audio track is locked
     greeting_fired = False
 
     async def _speak_opening():
@@ -574,36 +573,29 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         if greeting_fired:
             return
         greeting_fired = True
-        if hasattr(ctx, "perf"):
-            ctx.perf.log("T6: Speak-first greeting trigger entered")
         try:
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T7: Opening greeting sent")
+            await asyncio.sleep(0.4)
             if getattr(session, "tts", None) is not None:
-                await session.say(greeting, allow_interruptions=True)
+                await session.say(greeting, allow_interruptions=False)
             else:
                 await session.generate_reply(
-                    instructions=f"Speak your opening greeting immediately to welcome the customer: {greeting}"
+                    instructions=f"Speak opening greeting immediately: {greeting}",
+                    allow_interruptions=False
                 )
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            await _log("error", f"Opening greeting notice: {exc}")
-            try:
-                await session.generate_reply(
-                    instructions=f"Speak your opening greeting immediately: {greeting}"
-                )
-            except Exception:
-                pass
+            await _log("error", f"Failed to speak opening greeting: {exc}")
 
     @ctx.room.on("track_subscribed")
-    def on_track_subscribed(track, publication, participant):
+    def on_track_subscribed(track: rtc.Track, publication: rtc.TrackPublication, participant: rtc.RemoteParticipant):
         if track.kind == rtc.TrackKind.KIND_AUDIO:
-            if hasattr(ctx, "perf"):
-                ctx.perf.log(f"T5: First remote audio track subscribed ({participant.identity})")
             asyncio.create_task(_speak_opening())
 
-    # Trigger the exact millisecond customer answers / session.start finishes
-    asyncio.create_task(_speak_opening())
+    for p in ctx.room.remote_participants.values():
+        for pub in p.track_publications.values():
+            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
+                asyncio.create_task(_speak_opening())
+                break
 
     # 5. Background tasks for DB logging & S3 recording (non-blocking)
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
