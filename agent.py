@@ -158,18 +158,18 @@ GLOBAL_VAD = None
 if silero:
     try:
         GLOBAL_VAD = silero.VAD.load(
-            min_speech_duration=0.05,
-            min_silence_duration=0.2,
-            prefix_padding_duration=0.05,
+            min_speech_duration=0.15,
+            min_silence_duration=0.30,
+            prefix_padding_duration=0.10,
             max_buffered_speech=2.0,
             activation_threshold=0.5,
         )
     except Exception:
         try:
             GLOBAL_VAD = silero.VAD.load(
-                min_speech_duration=0.05,
-                min_silence_duration=0.2,
-                prefix_padding_duration=0.05,
+                min_speech_duration=0.15,
+                min_silence_duration=0.30,
+                prefix_padding_duration=0.10,
             )
         except Exception:
             try:
@@ -208,12 +208,19 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
     # Fallback to Gemini Live Realtime ONLY if use_realtime is explicitly True OR if DEEPGRAM_API_KEY is completely empty
     if (use_realtime or not deepgram_key) and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
-        return AgentSession(
-            llm=RealtimeClass(
+        try:
+            realtime_llm = RealtimeClass(
                 model=gemini_model,
                 voice=gemini_voice,
                 instructions=system_prompt,
-            ),
+            )
+        except Exception:
+            realtime_llm = RealtimeClass(
+                model=gemini_model,
+                voice=gemini_voice,
+            )
+        return AgentSession(
+            llm=realtime_llm,
             vad=vad,
             tools=tools,
         )
