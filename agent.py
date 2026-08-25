@@ -410,7 +410,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 await session.say(greeting, allow_interruptions=False)
             else:
                 await session.generate_reply(
-                    instructions=f"Say your opening greeting in natural Hindi immediately: {greeting}",
+                    instructions=f"Speak opening greeting immediately in natural Hindi: {greeting}",
                     allow_interruptions=False
                 )
             await _log("info", f"Opening greeting spoken to {phone_number}")
@@ -589,7 +589,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 await session.say(greeting, allow_interruptions=False)
             else:
                 await session.generate_reply(
-                    instructions=f"Say your opening greeting in natural Hindi immediately: {greeting}",
+                    instructions=f"Speak opening greeting immediately in natural Hindi: {greeting}",
                     allow_interruptions=False
                 )
             await _log("info", f"Opening greeting spoken to {phone_number}")
