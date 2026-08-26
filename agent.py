@@ -122,7 +122,16 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception as f_err:
             logger.error("Failed writing GCP JSON: %s", f_err)
 
-    stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi", endpointing=0.30) if _deepgram_stt and deepgram_key else None
+    stt = None
+    if _deepgram_stt and deepgram_key:
+        try:
+            stt = _deepgram_stt(
+                api_key=deepgram_key,
+                model="nova-3",
+                language="multi",
+            )
+        except Exception as exc:
+            logger.error("Deepgram STT init error: %s", exc)
     tts = google.TTS(voice_name=gemini_voice, language="hi-IN" if "hi-IN" in gemini_voice else "en-IN") if google and hasattr(google, "TTS") else None
     
     initial_ctx = llm.ChatContext()
