@@ -50,6 +50,11 @@ try:
 except ImportError:
     noise_cancellation = None
 
+try:
+    from google.oauth2 import service_account
+except ImportError:
+    service_account = None
+
 # ── Local Module Imports ─────────────────────────────────────────────────────
 from db import (
     init_db, log_error, get_enabled_tools, update_call_status,
@@ -246,15 +251,49 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
         except Exception as stt_exc:
             logger.warning("Deepgram STT initialization notice: %s", stt_exc)
 
+    google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+    gcp_credentials = None
+    if google_json_str and service_account:
+        try:
+            creds_dict = json.loads(google_json_str)
+            gcp_credentials = service_account.Credentials.from_service_account_info(creds_dict)
+            logger.info("GCP Service Account credentials loaded successfully.")
+        except Exception as cred_err:
+            logger.error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: %s", cred_err)
+
+    google_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    tts_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
+
     tts = None
     if _google_tts:
         try:
-            tts = _google_tts(voice_name=gemini_voice)
-        except Exception:
+            kwargs = {
+                "voice_name": tts_voice,
+                "language": "hi-IN" if "hi-IN" in tts_voice else "en-IN",
+            }
+            if gcp_credentials:
+                kwargs["credentials"] = gcp_credentials
+            elif google_api_key:
+                kwargs["api_key"] = google_api_key
+
+            tts = _google_tts(**kwargs)
+            logger.info("Google Cloud TTS initialized successfully with voice=%s", tts_voice)
+        except Exception as tts_err:
+            logger.error("Failed to initialize Google Cloud TTS: %s", tts_err)
             try:
-                tts = _google_tts()
+                tts = _google_tts(
+                    voice_name=tts_voice,
+                    language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
+                    api_key=google_api_key,
+                )
             except Exception:
-                pass
+                try:
+                    tts = _google_tts(voice_name=tts_voice)
+                except Exception:
+                    try:
+                        tts = _google_tts()
+                    except Exception:
+                        pass
 
     return AgentSession(
         stt=stt,
