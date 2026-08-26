@@ -31,33 +31,17 @@ try:
 except ImportError:
     pass
 
-# ── LiveKit SDK Imports ──────────────────────────────────────────────────────
+# ── LiveKit SDK & Plugin Imports ──────────────────────────────────────────────
 from livekit import agents, api, rtc
-from livekit.agents import Agent, AgentSession, llm
+from livekit.agents import llm
+from livekit.agents.pipeline import VoicePipelineAgent
+from livekit.plugins import google, deepgram, silero
 
-try:
-    from livekit.agents.pipeline import VoicePipelineAgent
-except ImportError:
-    try:
-        from livekit.agents import VoicePipelineAgent
-    except ImportError:
-        VoicePipelineAgent = None
-
-# Optional imports — wrapped in try/except so missing packages don't crash startup
+# Optional imports
 try:
     from livekit.agents import RoomInputOptions
 except ImportError:
     RoomInputOptions = None
-
-try:
-    from livekit.plugins import silero
-except ImportError:
-    silero = None
-
-try:
-    from livekit.plugins import noise_cancellation
-except ImportError:
-    noise_cancellation = None
 
 try:
     from google.oauth2 import service_account
@@ -133,85 +117,26 @@ def load_db_settings_to_env() -> None:
         logger.warning("Could not load settings from Supabase: %s", exc)
 
 
-# ── Google AI Plugin Discovery ───────────────────────────────────────────────
-try:
-    from livekit.plugins import google
-    logger.info("LiveKit Google plugin imported successfully.")
-    _google_realtime = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
-    _google_beta_realtime = getattr(getattr(getattr(google, "beta", None), "realtime", None), "RealtimeModel", None)
-    _google_llm = getattr(google, "LLM", None)
-    _google_tts = getattr(google, "TTS", None)
-except Exception as imp_err:
-    logger.critical("FAILED TO IMPORT LIVEKIT GOOGLE PLUGIN: %s", imp_err)
-    google = None
-    _google_realtime = None
-    _google_beta_realtime = None
-    _google_llm = None
-    _google_tts = None
-
-_deepgram_stt = None
-try:
-    from livekit.plugins import deepgram as _dg
-    _deepgram_stt = _dg.STT
-except ImportError:
-    pass
-
-
 # ── Global VAD Preloading ───────────────────────────────────────────────────
-GLOBAL_VAD = None
-if silero:
-    try:
-        GLOBAL_VAD = silero.VAD.load(
-            min_speech_duration=0.15,
-            min_silence_duration=0.30,
-            prefix_padding_duration=0.10,
-            activation_threshold=0.60,
-            max_buffered_speech=2.0,
-        )
-    except Exception:
-        try:
-            GLOBAL_VAD = silero.VAD.load(
-                min_speech_duration=0.15,
-                min_silence_duration=0.30,
-                prefix_padding_duration=0.10,
-                activation_threshold=0.60,
-            )
-        except Exception:
-            try:
-                GLOBAL_VAD = silero.VAD.load()
-            except Exception:
-                pass
+GLOBAL_VAD = silero.VAD.load(
+    min_speech_duration=0.15,
+    min_silence_duration=0.30,
+    prefix_padding_duration=0.10,
+    activation_threshold=0.60,
+    max_buffered_speech=2.0,
+)
 
 
-# ── Chat Context Helper ──────────────────────────────────────────────────────
+# ── VoicePipelineAgent Factory ────────────────────────────────────────────────
 
-def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatContext:
-    init_ctx = llm.ChatContext()
-    try:
-        init_ctx.add_message(role="system", content=system_prompt)
-        init_ctx.add_message(role="user", content=user_text)
-    except Exception:
-        try:
-            init_ctx.add_message(role="system", text=system_prompt)
-            init_ctx.add_message(role="user", text=user_text)
-        except Exception:
-            pass
-    return init_ctx
-
-
-# ── Session Factory ──────────────────────────────────────────────────────────
-
-def _build_session(tools: list, system_prompt: str, tool_ctx=None):
+def _build_session(tools: list, system_prompt: str, tool_ctx=None) -> VoicePipelineAgent:
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
-    if _google_llm is None:
-        raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
+    logger.info("SESSION MODE: Modular VoicePipelineAgent (Deepgram STT nova-3 + Gemini Flash LLM + Google TTS)")
 
-    logger.info("SESSION MODE: Modular Pipeline (Deepgram STT + Gemini Flash LLM + Google TTS)")
-
-    # 1. GCP JSON Credentials
+    # 1. Setup Google Cloud Service Account Credentials
     google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
     temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
     if google_json_str:
@@ -223,44 +148,27 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception as f_err:
             logger.error("Failed to write GCP JSON: %s", f_err)
 
-    # 2. Deepgram STT
-    stt = None
-    if _deepgram_stt and deepgram_key:
-        try:
-            stt = _deepgram_stt(
-                api_key=deepgram_key,
-                model="nova-3",
-                language="multi",
-                endpointing=0.30,
-                interim_results=True,
-            )
-            logger.info("Deepgram STT initialized (nova-3).")
-        except Exception as stt_exc:
-            logger.warning("Deepgram STT init error: %s", stt_exc)
+    # 2. STT Setup (Deepgram Nova-3)
+    stt = deepgram.STT(
+        api_key=deepgram_key,
+        model="nova-3",
+        language="multi",
+        endpointing=0.30,
+        interim_results=True,
+    )
+    logger.info("Deepgram STT initialized (nova-3).")
 
-    # 3. Google Cloud TTS
-    tts_instance = None
-    if google and hasattr(google, "TTS"):
-        try:
-            tts_instance = google.TTS(
-                voice_name=gemini_voice,
-                language="hi-IN" if "hi-IN" in gemini_voice else "en-IN"
-            )
-            logger.info("Google Cloud TTS initialized with voice=%s", gemini_voice)
-        except Exception as tts_init_err:
-            logger.critical("Google TTS failed: %s", tts_init_err)
-            try:
-                if _google_tts:
-                    tts_instance = _google_tts(
-                        voice_name=gemini_voice,
-                        language="hi-IN" if "hi-IN" in gemini_voice else "en-IN"
-                    )
-            except Exception:
-                pass
-    else:
-        logger.critical("FATAL: google.TTS is not available in livekit.plugins")
+    # 3. TTS Setup (Google Cloud TTS)
+    tts_instance = google.TTS(
+        voice_name=gemini_voice,
+        language="hi-IN" if "hi-IN" in gemini_voice else "en-IN",
+    )
+    logger.info("Google Cloud TTS initialized with voice=%s", gemini_voice)
 
-    # 4. Context
+    # 4. LLM Setup (Google Gemini 2.0 Flash)
+    llm_engine = google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash")
+
+    # 5. Chat Context Setup
     initial_ctx = llm.ChatContext()
     try:
         initial_ctx.add_message(role="system", content=system_prompt)
@@ -270,29 +178,16 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception:
             pass
 
-    # 5. Return VoicePipelineAgent
-    if VoicePipelineAgent is not None:
-        return VoicePipelineAgent(
-            vad=GLOBAL_VAD,
-            stt=stt,
-            llm=_google_llm(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash"),
-            tts=tts_instance,
-            chat_ctx=initial_ctx,
-            fnc_ctx=tool_ctx,
-        )
-
-    return AgentSession(
-        stt=stt,
-        llm=_google_llm(model="gemini-2.0-flash"),
-        tts=tts_instance,
+    # 6. Build and return VoicePipelineAgent
+    agent = VoicePipelineAgent(
         vad=GLOBAL_VAD,
-        tools=tools,
+        stt=stt,
+        llm=llm_engine,
+        tts=tts_instance,
+        chat_ctx=initial_ctx,
+        fnc_ctx=tool_ctx,
     )
-
-
-class OutboundAssistant(Agent):
-    def __init__(self, instructions: str) -> None:
-        super().__init__(instructions=instructions)
+    return agent
 
 
 # ── Recording Helper ─────────────────────────────────────────────────────────
@@ -388,40 +283,36 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     # 3. Start AI Session IMMEDIATELY
     tool_ctx.phone_number = phone_number
     active_tools = tool_ctx.build_tool_list(enabled_tools)
-    session = _build_session(tools=active_tools, system_prompt=system_prompt, tool_ctx=tool_ctx)
+    agent = _build_session(tools=active_tools, system_prompt=system_prompt, tool_ctx=tool_ctx)
     if hasattr(ctx, "perf"):
         ctx.perf.log("T2: _build_session completed")
 
-    # Hook up T8 (agent speaking) and T9 (user speaking) listeners
     t8_logged = False
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
 
-    if hasattr(session, "on"):
-        @session.on("agent_state_changed")
+    if hasattr(agent, "on"):
+        @agent.on("agent_state_changed")
         def on_agent_state_changed(ev):
             nonlocal t8_logged
             if hasattr(ctx, "perf"):
-                ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
-            if ev.new_state == "speaking" and not t8_logged:
+                ctx.perf.log(f"Agent state changed: {getattr(ev, 'old_state', '')} -> {getattr(ev, 'new_state', '')}")
+            if getattr(ev, "new_state", "") == "speaking" and not t8_logged:
                 t8_logged = True
                 if hasattr(ctx, "perf"):
                     ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
 
         t9_logged = False
-        @session.on("user_state_changed")
+        @agent.on("user_state_changed")
         def on_user_state_changed(ev):
             nonlocal t9_logged
-            if ev.new_state == "speaking" and not t9_logged:
+            if getattr(ev, "new_state", "") == "speaking" and not t9_logged:
                 t9_logged = True
                 if hasattr(ctx, "perf"):
                     ctx.perf.log("T9: First user speech detected by VAD")
 
-    if hasattr(session, "start"):
-        session.start(ctx.room)
-    elif hasattr(session, "start_session"):
-        session.start_session(ctx.room)
+    agent.start(ctx.room)
     if hasattr(ctx, "perf"):
-        ctx.perf.log("T3: session.start completed")
+        ctx.perf.log("T3: agent.start completed")
 
     # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers once audio track is locked
     greeting_fired = False
@@ -433,7 +324,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         greeting_fired = True
         try:
             await asyncio.sleep(0.4)
-            await session.say(greeting, allow_interruptions=False)
+            await agent.say(greeting, allow_interruptions=False)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
             await _log("error", f"Failed to speak opening greeting: {exc}")
@@ -449,33 +340,26 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 asyncio.create_task(_speak_opening())
                 break
 
+    # 5. Background inbound setup tasks (non-blocking)
     call_start_time = time.time()
     tool_ctx._call_start_time = call_start_time
 
-    # 5. Background CRM lookup, DB logging & S3 recording (non-blocking)
     async def _bg_inbound_setup():
         try:
-            caller_info = await lookup_inbound_caller(caller_phone=caller_phone, called_to=called_to)
-            lead_name = caller_info.get("lead_name") or "there"
-            business_name = caller_info.get("business_name") or "Kaamdhenu Real Estate"
-            service_type = caller_info.get("service_type") or "Real Estate Services"
-            
-            tool_ctx.lead_name = lead_name
-            tool_ctx.business_name = business_name
-            tool_ctx.service_type = service_type
-            tool_ctx.campaign_id = caller_info.get("campaign_id")
-
-            notes_text = f"Client Inbound ({caller_info.get('client_name')})" if caller_info.get('routing_type') == "client_specific" else "Inbound Call"
-            await start_call_log(
-                call_id=call_id,
+            db_call_id = await start_call_log(
                 phone_number=phone_number,
-                lead_name=lead_name,
-                service_type=service_type,
-                notes=notes_text,
-                campaign_id=caller_info.get("campaign_id"),
+                lead_name="Inbound Caller",
                 call_direction="inbound",
                 called_to=called_to,
             )
+            if db_call_id:
+                tool_ctx.call_id = db_call_id
+                await update_call_status(db_call_id, "in_progress")
+            lookup_task = lookup_inbound_caller(phone_number)
+            found_name = await asyncio.wait_for(lookup_task, timeout=1.5)
+            if found_name and found_name != "Inbound Caller":
+                await _log("info", f"Inbound caller recognized as: {found_name}")
+                tool_ctx.lead_name = found_name
         except Exception as _exc:
             logger.warning("Background inbound setup notice: %s", _exc)
 
@@ -485,7 +369,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     # 6. Wait for caller to hang up
     await _wait_for_hangup(ctx, label="Inbound caller")
 
-    return session, call_start_time, phone_number, "there", None, called_to
+    return agent, call_start_time, phone_number, "there", None, called_to
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -562,40 +446,36 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 
     # 3. CUSTOMER ANSWERED → Start AI Session NOW (fresh WebSocket, no staleness)
     await _log("info", f"Customer answered {phone_number} — starting Gemini session NOW")
-    session = _build_session(tools=active_tools, system_prompt=system_prompt, tool_ctx=tool_ctx)
+    agent = _build_session(tools=active_tools, system_prompt=system_prompt, tool_ctx=tool_ctx)
     if hasattr(ctx, "perf"):
         ctx.perf.log("T2: _build_session completed")
 
-    # Hook up T8 (agent speaking) and T9 (user speaking) listeners
     t8_logged = False
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
 
-    if hasattr(session, "on"):
-        @session.on("agent_state_changed")
+    if hasattr(agent, "on"):
+        @agent.on("agent_state_changed")
         def on_agent_state_changed(ev):
             nonlocal t8_logged
             if hasattr(ctx, "perf"):
-                ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
-            if ev.new_state == "speaking" and not t8_logged:
+                ctx.perf.log(f"Agent state changed: {getattr(ev, 'old_state', '')} -> {getattr(ev, 'new_state', '')}")
+            if getattr(ev, "new_state", "") == "speaking" and not t8_logged:
                 t8_logged = True
                 if hasattr(ctx, "perf"):
                     ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
 
         t9_logged = False
-        @session.on("user_state_changed")
+        @agent.on("user_state_changed")
         def on_user_state_changed(ev):
             nonlocal t9_logged
-            if ev.new_state == "speaking" and not t9_logged:
+            if getattr(ev, "new_state", "") == "speaking" and not t9_logged:
                 t9_logged = True
                 if hasattr(ctx, "perf"):
                     ctx.perf.log("T9: First user speech detected by VAD")
 
-    if hasattr(session, "start"):
-        session.start(ctx.room)
-    elif hasattr(session, "start_session"):
-        session.start_session(ctx.room)
+    agent.start(ctx.room)
     if hasattr(ctx, "perf"):
-        ctx.perf.log("T3: session.start completed")
+        ctx.perf.log("T3: agent.start completed")
 
     # 4. RELIABLE EVENT-DRIVEN OPENING GREETING — triggers once audio track is locked
     greeting_fired = False
@@ -607,7 +487,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         greeting_fired = True
         try:
             await asyncio.sleep(0.4)
-            await session.say(greeting, allow_interruptions=False)
+            await agent.say(greeting, allow_interruptions=False)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
             await _log("error", f"Failed to speak opening greeting: {exc}")
@@ -630,7 +510,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     # 6. Wait for customer to hang up
     await _wait_for_hangup(ctx, label="Customer")
 
-    return session, call_start_time, phone_number, lead_name, campaign_id, None
+    return agent, call_start_time, phone_number, lead_name, campaign_id, None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -715,17 +595,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     tool_ctx.call_id = call_id
 
     # ── Declare variables for finally block ──────────────────────────────
-    session = None
+    agent_instance = None
     call_start_time = None
     campaign_id = metadata.get("campaign_id")
     called_to = None
 
     try:
         if is_inbound:
-            session, call_start_time, phone_number, lead_name, campaign_id, called_to = \
+            agent_instance, call_start_time, phone_number, lead_name, campaign_id, called_to = \
                 await _handle_inbound(ctx, metadata, call_id, tool_ctx, enabled_tools)
         else:
-            session, call_start_time, phone_number, lead_name, campaign_id, called_to = \
+            agent_instance, call_start_time, phone_number, lead_name, campaign_id, called_to = \
                 await _handle_outbound(ctx, metadata, call_id, tool_ctx, enabled_tools)
 
     except Exception as e:
@@ -768,10 +648,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             except Exception as _db_err:
                 await _log("error", f"Failed to complete_call_log in finally: {_db_err}")
 
-        # ── Close session ────────────────────────────────────────────────
-        if session:
+        # ── Close agent session ──────────────────────────────────────────
+        if agent_instance and hasattr(agent_instance, "aclose"):
             try:
-                await session.aclose()
+                await agent_instance.aclose()
             except Exception:
                 pass
 
