@@ -35,6 +35,14 @@ except ImportError:
 from livekit import agents, api, rtc
 from livekit.agents import Agent, AgentSession, llm
 
+try:
+    from livekit.agents.pipeline import VoicePipelineAgent
+except ImportError:
+    try:
+        from livekit.agents import VoicePipelineAgent
+    except ImportError:
+        VoicePipelineAgent = None
+
 # Optional imports — wrapped in try/except so missing packages don't crash startup
 try:
     from livekit.agents import RoomInputOptions
@@ -193,14 +201,13 @@ def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatC
 
 # ── Session Factory ──────────────────────────────────────────────────────────
 
-def _build_session(tools: list, system_prompt: str) -> AgentSession:
+def _build_session(tools: list, system_prompt: str, tool_ctx=None):
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
     use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
     RealtimeClass = _google_realtime or _google_beta_realtime
-    vad = GLOBAL_VAD
 
     # Only use Gemini Live Realtime WebSocket if USE_GEMINI_REALTIME is explicitly "true"
     if use_realtime and RealtimeClass is not None:
@@ -221,7 +228,7 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 realtime_llm = RealtimeClass(model=gemini_model)
         return AgentSession(
             llm=realtime_llm,
-            vad=vad,
+            vad=GLOBAL_VAD,
             tools=tools,
         )
 
@@ -229,6 +236,20 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
 
     logger.info("SESSION MODE: Modular Pipeline (Deepgram STT + Gemini Flash LLM + Google TTS)")
+
+    # 1. Setup Google Cloud Credentials
+    google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+    temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
+    if google_json_str:
+        try:
+            with open(temp_cred_path, "w", encoding="utf-8") as f:
+                f.write(google_json_str)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
+            logger.info("Service account JSON written to %s", temp_cred_path)
+        except Exception as f_err:
+            logger.error("Failed to write GCP JSON: %s", f_err)
+
+    # 2. STT Setup (Deepgram Nova-3)
     stt = None
     if _deepgram_stt and deepgram_key:
         try:
@@ -239,23 +260,11 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 endpointing=0.30,
                 interim_results=True,
             )
-            logger.info("Deepgram STT initialized successfully (nova-3).")
+            logger.info("Deepgram STT initialized (nova-3).")
         except Exception as stt_exc:
-            logger.warning("Deepgram STT initialization notice: %s", stt_exc)
+            logger.warning("Deepgram STT init error: %s", stt_exc)
 
-    # 1. Write Service Account JSON to disk
-    google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
-    temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
-    if google_json_str:
-        try:
-            with open(temp_cred_path, "w", encoding="utf-8") as f:
-                f.write(google_json_str)
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
-            logger.info("Service account JSON written to %s (length: %d)", temp_cred_path, len(google_json_str))
-        except Exception as f_err:
-            logger.error("Failed to write GCP JSON: %s", f_err)
-
-    # 2. Initialize Google TTS
+    # 3. TTS Setup (Google Cloud TTS)
     tts_instance = None
     if google and hasattr(google, "TTS"):
         try:
@@ -263,9 +272,9 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 voice_name=gemini_voice,
                 language="hi-IN" if "hi-IN" in gemini_voice else "en-IN"
             )
-            logger.info("SUCCESS: Google Cloud TTS initialized with voice=%s", gemini_voice)
+            logger.info("Google Cloud TTS initialized with voice=%s", gemini_voice)
         except Exception as tts_init_err:
-            logger.critical("FATAL: Google TTS failed to initialize: %s", tts_init_err)
+            logger.critical("Google TTS failed: %s", tts_init_err)
             try:
                 if _google_tts:
                     tts_instance = _google_tts(
@@ -277,11 +286,33 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
     else:
         logger.critical("FATAL: google.TTS is not available in livekit.plugins")
 
+    # 4. Chat Context
+    initial_ctx = llm.ChatContext()
+    try:
+        initial_ctx.add_message(role="system", content=system_prompt)
+    except Exception:
+        try:
+            initial_ctx.add_message(role="system", text=system_prompt)
+        except Exception:
+            pass
+
+    # 5. Build VoicePipelineAgent
+    if VoicePipelineAgent is not None:
+        agent = VoicePipelineAgent(
+            vad=GLOBAL_VAD,
+            stt=stt,
+            llm=_google_llm(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash"),
+            tts=tts_instance,
+            chat_ctx=initial_ctx,
+            fnc_ctx=tool_ctx,
+        )
+        return agent
+
     return AgentSession(
         stt=stt,
         llm=_google_llm(model="gemini-2.0-flash"),
         tts=tts_instance,
-        vad=vad,
+        vad=GLOBAL_VAD,
         tools=tools,
     )
 
@@ -384,7 +415,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     # 3. Start AI Session IMMEDIATELY
     tool_ctx.phone_number = phone_number
     active_tools = tool_ctx.build_tool_list(enabled_tools)
-    session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    session = _build_session(tools=active_tools, system_prompt=system_prompt, tool_ctx=tool_ctx)
     if hasattr(ctx, "perf"):
         ctx.perf.log("T2: _build_session completed")
 
@@ -392,29 +423,30 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     t8_logged = False
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
 
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(ev):
-        nonlocal t8_logged
-        if hasattr(ctx, "perf"):
-            ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
-        if ev.new_state == "speaking" and not t8_logged:
-            t8_logged = True
+    if hasattr(session, "on"):
+        @session.on("agent_state_changed")
+        def on_agent_state_changed(ev):
+            nonlocal t8_logged
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
+                ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
+            if ev.new_state == "speaking" and not t8_logged:
+                t8_logged = True
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
 
-    t9_logged = False
-    @session.on("user_state_changed")
-    def on_user_state_changed(ev):
-        nonlocal t9_logged
-        if ev.new_state == "speaking" and not t9_logged:
-            t9_logged = True
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T9: First user speech detected by VAD")
+        t9_logged = False
+        @session.on("user_state_changed")
+        def on_user_state_changed(ev):
+            nonlocal t9_logged
+            if ev.new_state == "speaking" and not t9_logged:
+                t9_logged = True
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T9: First user speech detected by VAD")
 
-    await session.start(
-        room=ctx.room,
-        agent=OutboundAssistant(instructions=system_prompt),
-    )
+    if hasattr(session, "start"):
+        session.start(ctx.room)
+    elif hasattr(session, "start_session"):
+        session.start_session(ctx.room)
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
@@ -428,13 +460,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         greeting_fired = True
         try:
             await asyncio.sleep(0.4)
-            if getattr(session, "tts", None) is not None:
-                await session.say(greeting, allow_interruptions=False)
-            else:
-                await session.generate_reply(
-                    instructions=f"Speak opening greeting immediately in natural Hindi: {greeting}",
-                    allow_interruptions=False
-                )
+            await session.say(greeting, allow_interruptions=False)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
             await _log("error", f"Failed to speak opening greeting: {exc}")
@@ -563,7 +589,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 
     # 3. CUSTOMER ANSWERED → Start AI Session NOW (fresh WebSocket, no staleness)
     await _log("info", f"Customer answered {phone_number} — starting Gemini session NOW")
-    session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    session = _build_session(tools=active_tools, system_prompt=system_prompt, tool_ctx=tool_ctx)
     if hasattr(ctx, "perf"):
         ctx.perf.log("T2: _build_session completed")
 
@@ -571,29 +597,30 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     t8_logged = False
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
 
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(ev):
-        nonlocal t8_logged
-        if hasattr(ctx, "perf"):
-            ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
-        if ev.new_state == "speaking" and not t8_logged:
-            t8_logged = True
+    if hasattr(session, "on"):
+        @session.on("agent_state_changed")
+        def on_agent_state_changed(ev):
+            nonlocal t8_logged
             if hasattr(ctx, "perf"):
-                ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
+                ctx.perf.log(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
+            if ev.new_state == "speaking" and not t8_logged:
+                t8_logged = True
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T8: First audio frame received back from Gemini / agent speaking")
 
-    t9_logged = False
-    @session.on("user_state_changed")
-    def on_user_state_changed(ev):
-        nonlocal t9_logged
-        if ev.new_state == "speaking" and not t9_logged:
-            t9_logged = True
-            if hasattr(ctx, "perf"):
-                ctx.perf.log("T9: First user speech detected by VAD")
+        t9_logged = False
+        @session.on("user_state_changed")
+        def on_user_state_changed(ev):
+            nonlocal t9_logged
+            if ev.new_state == "speaking" and not t9_logged:
+                t9_logged = True
+                if hasattr(ctx, "perf"):
+                    ctx.perf.log("T9: First user speech detected by VAD")
 
-    await session.start(
-        room=ctx.room,
-        agent=OutboundAssistant(instructions=system_prompt),
-    )
+    if hasattr(session, "start"):
+        session.start(ctx.room)
+    elif hasattr(session, "start_session"):
+        session.start_session(ctx.room)
     if hasattr(ctx, "perf"):
         ctx.perf.log("T3: session.start completed")
 
@@ -607,13 +634,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         greeting_fired = True
         try:
             await asyncio.sleep(0.4)
-            if getattr(session, "tts", None) is not None:
-                await session.say(greeting, allow_interruptions=False)
-            else:
-                await session.generate_reply(
-                    instructions=f"Speak opening greeting immediately in natural Hindi: {greeting}",
-                    allow_interruptions=False
-                )
+            await session.say(greeting, allow_interruptions=False)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
             await _log("error", f"Failed to speak opening greeting: {exc}")
