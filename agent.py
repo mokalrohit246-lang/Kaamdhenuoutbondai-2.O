@@ -496,6 +496,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 
 async def entrypoint(ctx: agents.JobContext) -> None:
+    logger.info("🚀 [BUILD VERSION 2026.08.26-v2] VoicePipelineAgent Modular Pipeline Initializing...")
     ctx.perf = PerfProfiler()
     ctx.perf.log("T0: entrypoint triggered")
     
