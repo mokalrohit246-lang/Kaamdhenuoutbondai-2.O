@@ -302,7 +302,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
         if greeting_fired:
             return
         greeting_fired = True
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(1.0)
         try:
             if is_pipeline:
                 logger.info("Speaking greeting via VoicePipelineAgent.say: %s", greeting)
@@ -452,7 +452,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         if greeting_fired:
             return
         greeting_fired = True
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(1.0)
         try:
             if is_pipeline:
                 logger.info("Speaking greeting via VoicePipelineAgent.say: %s", greeting)
