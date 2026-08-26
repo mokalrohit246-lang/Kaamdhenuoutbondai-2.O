@@ -11,6 +11,18 @@ import uuid
 from datetime import datetime
 from dotenv import load_dotenv
 
+# ── SSL Certificate Fix ─────────────────────────────────────────────────────
+try:
+    import certifi
+    _orig_ssl = ssl.create_default_context
+    def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
+        if not kwargs.get("cafile") and not kwargs.get("capath") and not kwargs.get("cadata"):
+            kwargs["cafile"] = certifi.where()
+        return _orig_ssl(purpose, **kwargs)
+    ssl.create_default_context = _certifi_ssl
+except ImportError:
+    pass
+
 # ── LiveKit SDK Imports ──────────────────────────────────────────────────────
 from livekit import agents, api, rtc
 from livekit.agents import Agent, AgentSession, llm
@@ -101,7 +113,7 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
     
     # GCP Credentials Setup
     google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
-    temp_cred_path = "/tmp/gcp_creds.json"
+    temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
     if google_json_str:
         try:
             with open(temp_cred_path, "w", encoding="utf-8") as f:
@@ -114,12 +126,18 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
     tts = google.TTS(voice_name=gemini_voice, language="hi-IN" if "hi-IN" in gemini_voice else "en-IN") if google and hasattr(google, "TTS") else None
     
     initial_ctx = llm.ChatContext()
-    initial_ctx.append(role="system", text=system_prompt)
+    try:
+        initial_ctx.add_message(role="system", content=system_prompt)
+    except Exception:
+        try:
+            initial_ctx.append(role="system", text=system_prompt)
+        except Exception:
+            pass
 
     pipeline_agent = VoicePipelineAgent(
         vad=GLOBAL_VAD,
         stt=stt,
-        llm=google.LLM(model="gemini-2.0-flash") if google else None,
+        llm=google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash") if google else None,
         tts=tts,
         chat_ctx=initial_ctx,
         fnc_ctx=tool_ctx,
@@ -156,7 +174,7 @@ async def _start_recording(ctx: agents.JobContext, tool_ctx):
             logger.warning("Recording notice: %s", exc)
 
 
-async def _wait_for_hangup(ctx: agents.JobContext):
+async def _wait_for_hangup(ctx: agents.JobContext, label: str = "Participant"):
     while ctx.room.isconnected():
         await asyncio.sleep(1.0)
         if len(ctx.room.remote_participants) == 0:
@@ -221,9 +239,113 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
 
     asyncio.create_task(start_call_log(call_id=call_id, phone_number=caller_phone, lead_name="there", service_type="Real Estate", notes="Inbound Call", call_direction="inbound", called_to=called_to))
     asyncio.create_task(_start_recording(ctx, tool_ctx))
-    await _wait_for_hangup(ctx)
+    await _wait_for_hangup(ctx, label="Inbound caller")
 
     return agent_or_session, call_start_time, caller_phone, "there", None, called_to
+
+
+# ── Outbound Handler ─────────────────────────────────────────────────────────
+
+async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str, tool_ctx, enabled_tools: list):
+    phone_number = metadata.get("phone_number")
+    lead_name = metadata.get("lead_name", "there")
+    business_name = metadata.get("business_name", "our company")
+    service_type = metadata.get("service_type", "our service")
+    campaign_id = metadata.get("campaign_id")
+    campaign_name = metadata.get("campaign_name")
+    broker_phone = metadata.get("broker_phone")
+    trunk_id_override = metadata.get("outbound_trunk_id")
+
+    tool_ctx.phone_number = phone_number
+    tool_ctx.lead_name = lead_name
+    tool_ctx.campaign_id = campaign_id
+    tool_ctx.campaign_name = campaign_name
+    tool_ctx.broker_phone = broker_phone
+    tool_ctx.business_name = business_name
+    tool_ctx.service_type = service_type
+
+    system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
+                                 service_type=service_type, custom_prompt=metadata.get("system_prompt"))
+    active_tools = tool_ctx.build_tool_list(enabled_tools)
+
+    trunk_id = (
+        (trunk_id_override if trunk_id_override and trunk_id_override.startswith("ST_") else "") or
+        (os.getenv("OUTBOUND_TRUNK_ID", "").strip() if os.getenv("OUTBOUND_TRUNK_ID", "").strip().startswith("ST_") else "") or
+        (await get_setting("OUTBOUND_TRUNK_ID", "")) or
+        (trunk_id_override or os.getenv("OUTBOUND_TRUNK_ID", ""))
+    ).strip()
+
+    if not trunk_id:
+        err_msg = "OUTBOUND_TRUNK_ID not set. Please click '⚡ Create Outbound SIP Trunk' in Settings."
+        await _log("error", err_msg)
+        tool_ctx.outcome = "failed"
+        tool_ctx.end_reason = err_msg
+        return None, None, phone_number, lead_name, campaign_id, None
+
+    await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
+    asyncio.create_task(complete_call_log(call_id, outcome="ringing", reason="Dialing customer via SIP", call_direction="outbound"))
+
+    try:
+        await ctx.api.sip.create_sip_participant(
+            api.CreateSIPParticipantRequest(
+                room_name=ctx.room.name,
+                sip_trunk_id=trunk_id,
+                sip_call_to=phone_number,
+                participant_identity=f"sip_{phone_number}",
+                wait_until_answered=True,
+            )
+        )
+        call_start_time = time.time()
+        tool_ctx._call_start_time = call_start_time
+    except Exception as exc:
+        err_msg = f"SIP dial failed: {exc}"
+        await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+        tool_ctx.outcome = "failed"
+        tool_ctx.end_reason = err_msg
+        return None, None, phone_number, lead_name, campaign_id, None
+
+    await _log("info", f"Customer answered {phone_number} — starting AI session NOW")
+    agent_or_session, is_realtime = _build_agent_or_session(active_tools, system_prompt, tool_ctx)
+
+    if is_realtime:
+        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
+    else:
+        agent_or_session.start(ctx.room)
+
+    greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
+    greeting_fired = False
+
+    async def _speak_opening():
+        nonlocal greeting_fired
+        if greeting_fired:
+            return
+        greeting_fired = True
+        try:
+            await asyncio.sleep(0.4)
+            if is_realtime:
+                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
+            else:
+                await agent_or_session.say(greeting, allow_interruptions=False)
+            await _log("info", f"Opening greeting spoken to {phone_number}")
+        except Exception as exc:
+            await _log("error", f"Failed to speak opening greeting: {exc}")
+
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track: rtc.Track, publication: rtc.TrackPublication, participant: rtc.RemoteParticipant):
+        if track.kind == rtc.TrackKind.KIND_AUDIO:
+            asyncio.create_task(_speak_opening())
+
+    for p in ctx.room.remote_participants.values():
+        for pub in p.track_publications.values():
+            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
+                asyncio.create_task(_speak_opening())
+                break
+
+    asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
+    asyncio.create_task(_start_recording(ctx, tool_ctx))
+    await _wait_for_hangup(ctx, label="Customer")
+
+    return agent_or_session, call_start_time, phone_number, lead_name, campaign_id, None
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
@@ -232,30 +354,66 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     ctx.perf = PerfProfiler()
     ctx.perf.log("T0: entrypoint triggered")
     
-    metadata = json.loads(ctx.job.metadata) if ctx.job.metadata else {}
+    raw_meta = ctx.job.metadata or ""
+    metadata = {}
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+        except Exception:
+            metadata = {}
+
+    is_inbound = False
+    if (not metadata
+            or not metadata.get("phone_number")
+            or metadata.get("direction") == "inbound"
+            or metadata.get("inbound")
+            or ctx.room.name.startswith("inbound")):
+        is_inbound = True
+
     call_id = metadata.get("call_id") or str(uuid.uuid4())
 
     await ctx.connect(auto_subscribe=agents.AutoSubscribe.AUDIO_ONLY)
     enabled_tools = await get_enabled_tools()
     
-    tool_ctx = AppointmentTools(ctx, metadata.get("phone_number"), metadata.get("lead_name", "there"))
+    phone_number = metadata.get("phone_number")
+    lead_name = metadata.get("lead_name", "there")
+    tool_ctx = AppointmentTools(ctx, phone_number, lead_name)
     tool_ctx.call_id = call_id
 
     session = None
     call_start_time = None
-    phone_number = "unknown"
-    lead_name = "there"
-    campaign_id = None
+    campaign_id = metadata.get("campaign_id")
     called_to = None
 
     try:
-        session, call_start_time, phone_number, lead_name, campaign_id, called_to = await _handle_inbound(ctx, metadata, call_id, tool_ctx, enabled_tools)
+        if is_inbound:
+            session, call_start_time, phone_number, lead_name, campaign_id, called_to = \
+                await _handle_inbound(ctx, metadata, call_id, tool_ctx, enabled_tools)
+        else:
+            session, call_start_time, phone_number, lead_name, campaign_id, called_to = \
+                await _handle_outbound(ctx, metadata, call_id, tool_ctx, enabled_tools)
     except Exception as e:
-        logger.exception("CRITICAL ERROR: %s", e)
+        logger.exception("CRITICAL ERROR in entrypoint: %s", e)
+        await _log("error", f"Entrypoint crash: {e}", traceback.format_exc())
     finally:
         final_dur = max(1, int(time.time() - call_start_time)) if call_start_time else 0
         final_cost = round((final_dur / 60.0) * 1.20, 2)
-        await complete_call_log(call_id=call_id, outcome="completed", duration_seconds=final_dur, cost=final_cost, recording_url=getattr(tool_ctx, "recording_url", None), reason="Call completed", phone_number=phone_number, call_direction="inbound", called_to=called_to)
+        await complete_call_log(
+            call_id=call_id,
+            outcome=getattr(tool_ctx, "outcome", None) or ("completed" if call_start_time else "failed"),
+            duration_seconds=final_dur,
+            cost=final_cost,
+            recording_url=getattr(tool_ctx, "recording_url", None),
+            reason=getattr(tool_ctx, "end_reason", None) or ("Call completed" if call_start_time else "Call ended before answer"),
+            phone_number=phone_number,
+            call_direction="inbound" if is_inbound else "outbound",
+            called_to=called_to if is_inbound else None,
+        )
+        if session and hasattr(session, "aclose"):
+            try:
+                await session.aclose()
+            except Exception:
+                pass
 
 
 async def request_fnc(req: agents.JobRequest) -> None:
