@@ -245,7 +245,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
     if is_realtime:
         await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
     else:
-        agent_or_session.start(ctx.room)
+        await agent_or_session.start(ctx.room)
 
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
     greeting_fired = False
@@ -258,9 +258,9 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
         try:
             await asyncio.sleep(0.4)
             if is_realtime:
-                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
+                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=True)
             else:
-                await agent_or_session.say(greeting, allow_interruptions=False)
+                await agent_or_session.say(greeting, allow_interruptions=True)
             await _log("info", f"Opening greeting spoken to {caller_phone}")
         except Exception as exc:
             await _log("error", f"Failed to speak opening greeting: {exc}")
@@ -352,7 +352,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if is_realtime:
         await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
     else:
-        agent_or_session.start(ctx.room)
+        await agent_or_session.start(ctx.room)
 
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
     greeting_fired = False
@@ -365,9 +365,9 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         try:
             await asyncio.sleep(0.4)
             if is_realtime:
-                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
+                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=True)
             else:
-                await agent_or_session.say(greeting, allow_interruptions=False)
+                await agent_or_session.say(greeting, allow_interruptions=True)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
             await _log("error", f"Failed to speak opening greeting: {exc}")
