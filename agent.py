@@ -126,30 +126,20 @@ def load_db_settings_to_env() -> None:
 
 
 # ── Google AI Plugin Discovery ───────────────────────────────────────────────
-_google_realtime = None
-_google_beta_realtime = None
-_google_llm = None
-_google_tts = None
-
 try:
-    from livekit.plugins import google as _gp
-    try:
-        _google_realtime = _gp.realtime.RealtimeModel
-        logger.info("Loaded google.realtime.RealtimeModel (stable path)")
-    except AttributeError:
-        pass
-    try:
-        _google_beta_realtime = _gp.beta.realtime.RealtimeModel
-        logger.info("Loaded google.beta.realtime.RealtimeModel (beta path)")
-    except AttributeError:
-        pass
-    try:
-        _google_llm = _gp.LLM
-        _google_tts = _gp.TTS
-    except AttributeError:
-        pass
-except ImportError:
-    logger.warning("livekit-plugins-google not installed")
+    from livekit.plugins import google
+    logger.info("LiveKit Google plugin imported successfully.")
+    _google_realtime = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
+    _google_beta_realtime = getattr(getattr(getattr(google, "beta", None), "realtime", None), "RealtimeModel", None)
+    _google_llm = getattr(google, "LLM", None)
+    _google_tts = getattr(google, "TTS", None)
+except Exception as imp_err:
+    logger.critical("FAILED TO IMPORT LIVEKIT GOOGLE PLUGIN: %s", imp_err)
+    google = None
+    _google_realtime = None
+    _google_beta_realtime = None
+    _google_llm = None
+    _google_tts = None
 
 _deepgram_stt = None
 try:
@@ -252,55 +242,45 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
         except Exception as stt_exc:
             logger.warning("Deepgram STT initialization notice: %s", stt_exc)
 
+    # 1. Write Service Account JSON to disk
     google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
-    creds_dict = None
+    temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
     if google_json_str:
         try:
-            creds_dict = json.loads(google_json_str)
-            temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
             with open(temp_cred_path, "w", encoding="utf-8") as f:
                 f.write(google_json_str)
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
-            logger.info("GCP Service Account JSON written to %s", temp_cred_path)
-        except Exception as cred_err:
-            logger.error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: %s", cred_err)
+            logger.info("Service account JSON written to %s (length: %d)", temp_cred_path, len(google_json_str))
+        except Exception as f_err:
+            logger.error("Failed to write GCP JSON: %s", f_err)
 
+    # 2. Initialize Google TTS
     tts_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
-    tts = None
-    if _google_tts:
+    tts_instance = None
+    if google and hasattr(google, "TTS"):
         try:
-            if creds_dict:
-                try:
-                    tts = _google_tts(
-                        voice_name=tts_voice,
-                        language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
-                        credentials_info=creds_dict,
-                    )
-                except Exception:
-                    tts = _google_tts(
-                        voice_name=tts_voice,
-                        language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
-                    )
-            else:
-                tts = _google_tts(
-                    voice_name=tts_voice,
-                    language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
-                )
-            logger.info("Google Cloud TTS INITIALIZED SUCCESSFULLY with voice=%s", tts_voice)
-        except Exception as tts_err:
-            logger.error("Failed to initialize Google Cloud TTS: %s", tts_err)
+            tts_instance = google.TTS(
+                voice_name=tts_voice,
+                language="hi-IN" if "hi-IN" in tts_voice else "en-IN"
+            )
+            logger.info("SUCCESS: Google Cloud TTS initialized with voice=%s", tts_voice)
+        except Exception as tts_init_err:
+            logger.critical("FATAL: Google TTS failed to initialize: %s", tts_init_err)
             try:
-                tts = _google_tts(voice_name=tts_voice)
+                if _google_tts:
+                    tts_instance = _google_tts(
+                        voice_name=tts_voice,
+                        language="hi-IN" if "hi-IN" in tts_voice else "en-IN"
+                    )
             except Exception:
-                try:
-                    tts = _google_tts()
-                except Exception:
-                    pass
+                pass
+    else:
+        logger.critical("FATAL: google.TTS is not available in livekit.plugins")
 
     return AgentSession(
         stt=stt,
         llm=_google_llm(model="gemini-2.0-flash"),
-        tts=tts,
+        tts=tts_instance,
         vad=vad,
         tools=tools,
     )
