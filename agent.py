@@ -161,11 +161,12 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
             except Exception as tts_err:
                 logger.error("Google TTS Init Error: %s", tts_err)
 
+        valid_llm_model = "gemini-2.0-flash" if ("3.1" in gemini_model or "preview" in gemini_model or not gemini_model) else gemini_model
         llm_engine = None
         if google and hasattr(google, "LLM"):
             try:
-                llm_engine = google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash")
-                logger.info("Google LLM initialized: model=%s", gemini_model)
+                llm_engine = google.LLM(model=valid_llm_model)
+                logger.info("Google LLM initialized: model=%s", valid_llm_model)
             except Exception as llm_err:
                 logger.error("Google LLM Init Error: %s", llm_err)
 
