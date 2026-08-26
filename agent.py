@@ -204,40 +204,14 @@ def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatC
 def _build_session(tools: list, system_prompt: str, tool_ctx=None):
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     gemini_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
-
-    RealtimeClass = _google_realtime or _google_beta_realtime
-
-    # Only use Gemini Live Realtime WebSocket if USE_GEMINI_REALTIME is explicitly "true"
-    if use_realtime and RealtimeClass is not None:
-        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
-        try:
-            realtime_llm = RealtimeClass(
-                model=gemini_model,
-                voice=gemini_voice,
-                instructions=system_prompt,
-            )
-        except Exception:
-            try:
-                realtime_llm = RealtimeClass(
-                    model=gemini_model,
-                    voice=gemini_voice,
-                )
-            except Exception:
-                realtime_llm = RealtimeClass(model=gemini_model)
-        return AgentSession(
-            llm=realtime_llm,
-            vad=GLOBAL_VAD,
-            tools=tools,
-        )
 
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
 
     logger.info("SESSION MODE: Modular Pipeline (Deepgram STT + Gemini Flash LLM + Google TTS)")
 
-    # 1. Setup Google Cloud Credentials
+    # 1. GCP JSON Credentials
     google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
     temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
     if google_json_str:
@@ -249,7 +223,7 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception as f_err:
             logger.error("Failed to write GCP JSON: %s", f_err)
 
-    # 2. STT Setup (Deepgram Nova-3)
+    # 2. Deepgram STT
     stt = None
     if _deepgram_stt and deepgram_key:
         try:
@@ -264,7 +238,7 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception as stt_exc:
             logger.warning("Deepgram STT init error: %s", stt_exc)
 
-    # 3. TTS Setup (Google Cloud TTS)
+    # 3. Google Cloud TTS
     tts_instance = None
     if google and hasattr(google, "TTS"):
         try:
@@ -286,7 +260,7 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
     else:
         logger.critical("FATAL: google.TTS is not available in livekit.plugins")
 
-    # 4. Chat Context
+    # 4. Context
     initial_ctx = llm.ChatContext()
     try:
         initial_ctx.add_message(role="system", content=system_prompt)
@@ -296,9 +270,9 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception:
             pass
 
-    # 5. Build VoicePipelineAgent
+    # 5. Return VoicePipelineAgent
     if VoicePipelineAgent is not None:
-        agent = VoicePipelineAgent(
+        return VoicePipelineAgent(
             vad=GLOBAL_VAD,
             stt=stt,
             llm=_google_llm(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash"),
@@ -306,7 +280,6 @@ def _build_session(tools: list, system_prompt: str, tool_ctx=None):
             chat_ctx=initial_ctx,
             fnc_ctx=tool_ctx,
         )
-        return agent
 
     return AgentSession(
         stt=stt,
