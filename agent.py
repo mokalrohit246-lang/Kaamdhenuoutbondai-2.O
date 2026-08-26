@@ -12,6 +12,7 @@ import json
 import logging
 import ssl
 import time
+import tempfile
 import traceback
 import uuid
 from typing import Optional
@@ -252,48 +253,49 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
             logger.warning("Deepgram STT initialization notice: %s", stt_exc)
 
     google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
-    gcp_credentials = None
-    if google_json_str and service_account:
+    creds_dict = None
+    if google_json_str:
         try:
             creds_dict = json.loads(google_json_str)
-            gcp_credentials = service_account.Credentials.from_service_account_info(creds_dict)
-            logger.info("GCP Service Account credentials loaded successfully.")
+            temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
+            with open(temp_cred_path, "w", encoding="utf-8") as f:
+                f.write(google_json_str)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
+            logger.info("GCP Service Account JSON written to %s", temp_cred_path)
         except Exception as cred_err:
             logger.error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: %s", cred_err)
 
-    google_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
     tts_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
-
     tts = None
     if _google_tts:
         try:
-            kwargs = {
-                "voice_name": tts_voice,
-                "language": "hi-IN" if "hi-IN" in tts_voice else "en-IN",
-            }
-            if gcp_credentials:
-                kwargs["credentials"] = gcp_credentials
-            elif google_api_key:
-                kwargs["api_key"] = google_api_key
-
-            tts = _google_tts(**kwargs)
-            logger.info("Google Cloud TTS initialized successfully with voice=%s", tts_voice)
-        except Exception as tts_err:
-            logger.error("Failed to initialize Google Cloud TTS: %s", tts_err)
-            try:
+            if creds_dict:
+                try:
+                    tts = _google_tts(
+                        voice_name=tts_voice,
+                        language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
+                        credentials_info=creds_dict,
+                    )
+                except Exception:
+                    tts = _google_tts(
+                        voice_name=tts_voice,
+                        language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
+                    )
+            else:
                 tts = _google_tts(
                     voice_name=tts_voice,
                     language="hi-IN" if "hi-IN" in tts_voice else "en-IN",
-                    api_key=google_api_key,
                 )
+            logger.info("Google Cloud TTS INITIALIZED SUCCESSFULLY with voice=%s", tts_voice)
+        except Exception as tts_err:
+            logger.error("Failed to initialize Google Cloud TTS: %s", tts_err)
+            try:
+                tts = _google_tts(voice_name=tts_voice)
             except Exception:
                 try:
-                    tts = _google_tts(voice_name=tts_voice)
+                    tts = _google_tts()
                 except Exception:
-                    try:
-                        tts = _google_tts()
-                    except Exception:
-                        pass
+                    pass
 
     return AgentSession(
         stt=stt,
