@@ -195,14 +195,14 @@ def _build_initial_chat_context(system_prompt: str, user_text: str) -> llm.ChatC
 
 def _build_session(tools: list, system_prompt: str) -> AgentSession:
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    gemini_voice = os.getenv("GEMINI_TTS_VOICE", "Aoede")
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
+    gemini_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
+    use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
     RealtimeClass = _google_realtime or _google_beta_realtime
     vad = GLOBAL_VAD
 
-    # Prioritize Gemini Live Realtime WebSocket
+    # Only use Gemini Live Realtime WebSocket if USE_GEMINI_REALTIME is explicitly "true"
     if use_realtime and RealtimeClass is not None:
         logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
         try:
@@ -239,6 +239,7 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                 endpointing=0.30,
                 interim_results=True,
             )
+            logger.info("Deepgram STT initialized successfully (nova-3).")
         except Exception as stt_exc:
             logger.warning("Deepgram STT initialization notice: %s", stt_exc)
 
@@ -255,22 +256,21 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
             logger.error("Failed to write GCP JSON: %s", f_err)
 
     # 2. Initialize Google TTS
-    tts_voice = os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A").strip()
     tts_instance = None
     if google and hasattr(google, "TTS"):
         try:
             tts_instance = google.TTS(
-                voice_name=tts_voice,
-                language="hi-IN" if "hi-IN" in tts_voice else "en-IN"
+                voice_name=gemini_voice,
+                language="hi-IN" if "hi-IN" in gemini_voice else "en-IN"
             )
-            logger.info("SUCCESS: Google Cloud TTS initialized with voice=%s", tts_voice)
+            logger.info("SUCCESS: Google Cloud TTS initialized with voice=%s", gemini_voice)
         except Exception as tts_init_err:
             logger.critical("FATAL: Google TTS failed to initialize: %s", tts_init_err)
             try:
                 if _google_tts:
                     tts_instance = _google_tts(
-                        voice_name=tts_voice,
-                        language="hi-IN" if "hi-IN" in tts_voice else "en-IN"
+                        voice_name=gemini_voice,
+                        language="hi-IN" if "hi-IN" in gemini_voice else "en-IN"
                     )
             except Exception:
                 pass
