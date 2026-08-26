@@ -26,10 +26,18 @@ except ImportError:
 # ── LiveKit SDK Imports ──────────────────────────────────────────────────────
 from livekit import agents, api, rtc
 from livekit.agents import Agent, AgentSession, llm
+
+VoicePipelineAgent = None
 try:
     from livekit.agents.pipeline import VoicePipelineAgent
 except ImportError:
-    VoicePipelineAgent = None
+    try:
+        from livekit.agents.voice_pipeline import VoicePipelineAgent
+    except ImportError:
+        try:
+            from livekit.agents import VoicePipelineAgent
+        except ImportError:
+            VoicePipelineAgent = None
 
 try:
     from livekit.plugins import silero, google
@@ -39,6 +47,11 @@ except ImportError:
     silero = None
     google = None
     _deepgram_stt = None
+
+try:
+    from google.oauth2 import service_account
+except ImportError:
+    service_account = None
 
 # ── Local Module Imports ─────────────────────────────────────────────────────
 from db import (
@@ -101,15 +114,25 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
     use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
-    # 1. Realtime Mode Fallback
-    if use_realtime:
-        logger.info("Using GEMINI REALTIME mode")
-        RealtimeClass = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
-        realtime_llm = RealtimeClass(model=gemini_model, voice=gemini_voice, instructions=system_prompt)
-        return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools), True
+    # 1. Fallback to AgentSession (Gemini Realtime) if explicitly requested OR if VoicePipelineAgent is unavailable
+    if use_realtime or VoicePipelineAgent is None:
+        logger.info("Using GEMINI REALTIME / AgentSession mode (use_realtime=%s, VoicePipelineAgent=%s)",
+                    use_realtime, VoicePipelineAgent is not None)
+        RealtimeClass = (
+            getattr(getattr(google, "realtime", None), "RealtimeModel", None) or
+            getattr(getattr(getattr(google, "beta", None), "realtime", None), "RealtimeModel", None)
+        )
+        if RealtimeClass is not None:
+            try:
+                realtime_llm = RealtimeClass(model=gemini_model, voice=gemini_voice, instructions=system_prompt)
+            except Exception:
+                realtime_llm = RealtimeClass(model=gemini_model)
+            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools), True
+        elif google and hasattr(google, "LLM"):
+            return AgentSession(llm=google.LLM(model=gemini_model), vad=GLOBAL_VAD, tools=tools), True
 
     # 2. Modular 0.5s Pipeline Mode (VoicePipelineAgent)
-    logger.info("Using MODULAR PIPELINE (Deepgram + Flash + Google TTS)")
+    logger.info("Using MODULAR PIPELINE (Deepgram STT + Gemini Flash LLM + Google TTS)")
     
     # GCP Credentials Setup
     google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
@@ -125,15 +148,17 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
     stt = None
     if _deepgram_stt and deepgram_key:
         try:
-            stt = _deepgram_stt(
-                api_key=deepgram_key,
-                model="nova-3",
-                language="multi",
-            )
+            stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
         except Exception as exc:
-            logger.error("Deepgram STT init error: %s", exc)
-    tts = google.TTS(voice_name=gemini_voice, language="hi-IN" if "hi-IN" in gemini_voice else "en-IN") if google and hasattr(google, "TTS") else None
-    
+            logger.error("STT Init Error: %s", exc)
+
+    tts = None
+    if google and hasattr(google, "TTS"):
+        try:
+            tts = google.TTS(voice_name=gemini_voice, language="hi-IN" if "hi-IN" in gemini_voice else "en-IN")
+        except Exception as tts_err:
+            logger.error("Google TTS Init Error: %s", tts_err)
+
     initial_ctx = llm.ChatContext()
     try:
         initial_ctx.add_message(role="system", content=system_prompt)
@@ -143,15 +168,23 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
         except Exception:
             pass
 
-    pipeline_agent = VoicePipelineAgent(
-        vad=GLOBAL_VAD,
-        stt=stt,
-        llm=google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash") if google else None,
-        tts=tts,
-        chat_ctx=initial_ctx,
-        fnc_ctx=tool_ctx,
-    )
-    return pipeline_agent, False
+    try:
+        pipeline_agent = VoicePipelineAgent(
+            vad=GLOBAL_VAD,
+            stt=stt,
+            llm=google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash") if google and hasattr(google, "LLM") else None,
+            tts=tts,
+            chat_ctx=initial_ctx,
+            fnc_ctx=tool_ctx,
+        )
+        return pipeline_agent, False
+    except Exception as agent_err:
+        logger.error("Failed to build VoicePipelineAgent, falling back to AgentSession: %s", agent_err)
+        RealtimeClass = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
+        if RealtimeClass is not None:
+            realtime_llm = RealtimeClass(model=gemini_model, voice=gemini_voice)
+            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools), True
+        return AgentSession(llm=google.LLM(model=gemini_model) if google and hasattr(google, "LLM") else None, vad=GLOBAL_VAD, tools=tools), True
 
 
 class OutboundAssistant(Agent):
