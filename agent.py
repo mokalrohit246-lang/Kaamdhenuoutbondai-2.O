@@ -245,7 +245,34 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
     if is_realtime:
         await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
     else:
-        await agent_or_session.start(ctx.room)
+        if asyncio.iscoroutinefunction(getattr(agent_or_session, "start", None)):
+            await agent_or_session.start(ctx.room)
+        else:
+            res = agent_or_session.start(ctx.room)
+            if asyncio.iscoroutine(res):
+                await res
+
+    try:
+        pub_count = len(ctx.room.local_participant.track_publications)
+        logger.info("🔊 Published tracks count: %d", pub_count)
+    except Exception:
+        pass
+
+    if not is_realtime and hasattr(agent_or_session, "on"):
+        try:
+            @agent_or_session.on("user_speech_committed")
+            def _on_user_speech(msg):
+                logger.info("🎤 [STT DETECTED USER]: %s", getattr(msg, "content", msg))
+
+            @agent_or_session.on("agent_speech_committed")
+            def _on_agent_speech(msg):
+                logger.info("🔊 [TTS DELIVERED AGENT]: %s", getattr(msg, "content", msg))
+
+            @agent_or_session.on("error")
+            def _on_agent_err(err):
+                logger.error("❌ [PIPELINE RUNTIME ERROR]: %s", err)
+        except Exception:
+            pass
 
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
     greeting_fired = False
@@ -255,14 +282,16 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
         if greeting_fired:
             return
         greeting_fired = True
+        await asyncio.sleep(0.6)
         try:
-            await asyncio.sleep(0.4)
             if is_realtime:
-                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=True)
+                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
             else:
                 await agent_or_session.say(greeting, allow_interruptions=True)
+            logger.info("🔊 [TTS SUCCESS] Opening greeting sent to room: %s", greeting)
             await _log("info", f"Opening greeting spoken to {caller_phone}")
         except Exception as exc:
+            logger.error("❌ [TTS ERROR] Failed to synthesize greeting: %s", exc)
             await _log("error", f"Failed to speak opening greeting: {exc}")
 
     @ctx.room.on("track_subscribed")
@@ -352,7 +381,34 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     if is_realtime:
         await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
     else:
-        await agent_or_session.start(ctx.room)
+        if asyncio.iscoroutinefunction(getattr(agent_or_session, "start", None)):
+            await agent_or_session.start(ctx.room)
+        else:
+            res = agent_or_session.start(ctx.room)
+            if asyncio.iscoroutine(res):
+                await res
+
+    try:
+        pub_count = len(ctx.room.local_participant.track_publications)
+        logger.info("🔊 Published tracks count: %d", pub_count)
+    except Exception:
+        pass
+
+    if not is_realtime and hasattr(agent_or_session, "on"):
+        try:
+            @agent_or_session.on("user_speech_committed")
+            def _on_user_speech(msg):
+                logger.info("🎤 [STT DETECTED USER]: %s", getattr(msg, "content", msg))
+
+            @agent_or_session.on("agent_speech_committed")
+            def _on_agent_speech(msg):
+                logger.info("🔊 [TTS DELIVERED AGENT]: %s", getattr(msg, "content", msg))
+
+            @agent_or_session.on("error")
+            def _on_agent_err(err):
+                logger.error("❌ [PIPELINE RUNTIME ERROR]: %s", err)
+        except Exception:
+            pass
 
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
     greeting_fired = False
@@ -362,14 +418,16 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         if greeting_fired:
             return
         greeting_fired = True
+        await asyncio.sleep(0.6)
         try:
-            await asyncio.sleep(0.4)
             if is_realtime:
-                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=True)
+                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
             else:
                 await agent_or_session.say(greeting, allow_interruptions=True)
+            logger.info("🔊 [TTS SUCCESS] Opening greeting sent to room: %s", greeting)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
+            logger.error("❌ [TTS ERROR] Failed to synthesize greeting: %s", exc)
             await _log("error", f"Failed to speak opening greeting: {exc}")
 
     @ctx.room.on("track_subscribed")
