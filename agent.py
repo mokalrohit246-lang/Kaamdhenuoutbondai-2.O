@@ -114,10 +114,9 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
     use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
 
-    # 1. Fallback to AgentSession (Gemini Realtime) if explicitly requested OR if VoicePipelineAgent is unavailable
-    if use_realtime or VoicePipelineAgent is None:
-        logger.info("Using GEMINI REALTIME / AgentSession mode (use_realtime=%s, VoicePipelineAgent=%s)",
-                    use_realtime, VoicePipelineAgent is not None)
+    # 1. Fallback to AgentSession (Gemini Realtime) if explicitly requested
+    if use_realtime:
+        logger.info("SESSION MODE: Gemini Live Realtime requested (use_realtime=true)")
         RealtimeClass = (
             getattr(getattr(google, "realtime", None), "RealtimeModel", None) or
             getattr(getattr(getattr(google, "beta", None), "realtime", None), "RealtimeModel", None)
@@ -127,64 +126,82 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None):
                 realtime_llm = RealtimeClass(model=gemini_model, voice=gemini_voice, instructions=system_prompt)
             except Exception:
                 realtime_llm = RealtimeClass(model=gemini_model)
-            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools), True
+            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools)
         elif google and hasattr(google, "LLM"):
-            return AgentSession(llm=google.LLM(model=gemini_model), vad=GLOBAL_VAD, tools=tools), True
+            return AgentSession(llm=google.LLM(model=gemini_model), vad=GLOBAL_VAD, tools=tools)
 
     # 2. Modular 0.5s Pipeline Mode (VoicePipelineAgent)
-    logger.info("Using MODULAR PIPELINE (Deepgram STT + Gemini Flash LLM + Google TTS)")
-    
-    # GCP Credentials Setup
-    google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
-    temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
-    if google_json_str:
-        try:
-            with open(temp_cred_path, "w", encoding="utf-8") as f:
-                f.write(google_json_str)
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
-        except Exception as f_err:
-            logger.error("Failed writing GCP JSON: %s", f_err)
+    if VoicePipelineAgent is not None:
+        logger.info("SESSION MODE: Modular Pipeline (VoicePipelineAgent: Deepgram STT + Gemini Flash LLM + Google TTS)")
+        
+        # GCP Credentials Setup
+        google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+        temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
+        if google_json_str:
+            try:
+                with open(temp_cred_path, "w", encoding="utf-8") as f:
+                    f.write(google_json_str)
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
+            except Exception as f_err:
+                logger.error("Failed writing GCP JSON: %s", f_err)
 
-    stt = None
-    if _deepgram_stt and deepgram_key:
-        try:
-            stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
-        except Exception as exc:
-            logger.error("STT Init Error: %s", exc)
+        stt = None
+        if _deepgram_stt and deepgram_key:
+            try:
+                stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
+                logger.info("Deepgram STT initialized: model=nova-3")
+            except Exception as exc:
+                logger.error("Deepgram STT Init Error: %s", exc)
 
-    tts = None
-    if google and hasattr(google, "TTS"):
-        try:
-            tts = google.TTS(voice_name=gemini_voice, language="hi-IN" if "hi-IN" in gemini_voice else "en-IN")
-        except Exception as tts_err:
-            logger.error("Google TTS Init Error: %s", tts_err)
+        tts = None
+        if google and hasattr(google, "TTS"):
+            try:
+                tts = google.TTS(voice_name=gemini_voice, language="hi-IN" if "hi-IN" in gemini_voice else "en-IN")
+                logger.info("Google TTS initialized: voice=%s", gemini_voice)
+            except Exception as tts_err:
+                logger.error("Google TTS Init Error: %s", tts_err)
 
-    initial_ctx = llm.ChatContext()
-    try:
-        initial_ctx.add_message(role="system", content=system_prompt)
-    except Exception:
+        llm_engine = None
+        if google and hasattr(google, "LLM"):
+            try:
+                llm_engine = google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash")
+                logger.info("Google LLM initialized: model=%s", gemini_model)
+            except Exception as llm_err:
+                logger.error("Google LLM Init Error: %s", llm_err)
+
+        initial_ctx = llm.ChatContext()
         try:
-            initial_ctx.append(role="system", text=system_prompt)
+            initial_ctx.add_message(role="system", content=system_prompt)
+        except Exception:
+            try:
+                initial_ctx.append(role="system", text=system_prompt)
+            except Exception:
+                pass
+
+        try:
+            pipeline_agent = VoicePipelineAgent(
+                vad=GLOBAL_VAD,
+                stt=stt,
+                llm=llm_engine,
+                tts=tts,
+                chat_ctx=initial_ctx,
+                fnc_ctx=tool_ctx,
+            )
+            logger.info("VoicePipelineAgent built successfully.")
+            return pipeline_agent
+        except Exception as agent_err:
+            logger.error("Failed to construct VoicePipelineAgent, falling back to AgentSession: %s", agent_err)
+
+    # 3. Defensive Fallback to AgentSession
+    logger.info("SESSION MODE: Fallback AgentSession")
+    RealtimeClass = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
+    if RealtimeClass is not None:
+        try:
+            realtime_llm = RealtimeClass(model=gemini_model, voice=gemini_voice)
+            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools)
         except Exception:
             pass
-
-    try:
-        pipeline_agent = VoicePipelineAgent(
-            vad=GLOBAL_VAD,
-            stt=stt,
-            llm=google.LLM(model=gemini_model if "gemini" in gemini_model else "gemini-2.0-flash") if google and hasattr(google, "LLM") else None,
-            tts=tts,
-            chat_ctx=initial_ctx,
-            fnc_ctx=tool_ctx,
-        )
-        return pipeline_agent, False
-    except Exception as agent_err:
-        logger.error("Failed to build VoicePipelineAgent, falling back to AgentSession: %s", agent_err)
-        RealtimeClass = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
-        if RealtimeClass is not None:
-            realtime_llm = RealtimeClass(model=gemini_model, voice=gemini_voice)
-            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools), True
-        return AgentSession(llm=google.LLM(model=gemini_model) if google and hasattr(google, "LLM") else None, vad=GLOBAL_VAD, tools=tools), True
+    return AgentSession(llm=google.LLM(model=gemini_model) if google and hasattr(google, "LLM") else None, vad=GLOBAL_VAD, tools=tools)
 
 
 class OutboundAssistant(Agent):
@@ -240,17 +257,20 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
     tool_ctx.phone_number = caller_phone
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     
-    agent_or_session, is_realtime = _build_agent_or_session(active_tools, system_prompt, tool_ctx)
-    
-    if is_realtime:
-        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
-    else:
+    agent_or_session = _build_agent_or_session(active_tools, system_prompt, tool_ctx)
+    is_pipeline = VoicePipelineAgent is not None and isinstance(agent_or_session, VoicePipelineAgent)
+
+    if is_pipeline:
+        logger.info("Starting VoicePipelineAgent lifecycle...")
         if asyncio.iscoroutinefunction(getattr(agent_or_session, "start", None)):
             await agent_or_session.start(ctx.room)
         else:
             res = agent_or_session.start(ctx.room)
             if asyncio.iscoroutine(res):
                 await res
+    else:
+        logger.info("Starting AgentSession lifecycle with OutboundAssistant...")
+        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
 
     try:
         pub_count = len(ctx.room.local_participant.track_publications)
@@ -258,7 +278,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
     except Exception:
         pass
 
-    if not is_realtime and hasattr(agent_or_session, "on"):
+    if is_pipeline and hasattr(agent_or_session, "on"):
         try:
             @agent_or_session.on("user_speech_committed")
             def _on_user_speech(msg):
@@ -282,16 +302,27 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
         if greeting_fired:
             return
         greeting_fired = True
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.4)
         try:
-            if is_realtime:
-                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
-            else:
+            if is_pipeline:
+                logger.info("Speaking greeting via VoicePipelineAgent.say: %s", greeting)
                 await agent_or_session.say(greeting, allow_interruptions=True)
-            logger.info("🔊 [TTS SUCCESS] Opening greeting sent to room: %s", greeting)
+            else:
+                logger.info("Speaking greeting via AgentSession...")
+                if hasattr(agent_or_session, "_running") and not agent_or_session._running:
+                    logger.warning("AgentSession was not running! Force starting now...")
+                    await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
+                if getattr(agent_or_session, "tts", None) is not None:
+                    await agent_or_session.say(greeting, allow_interruptions=True)
+                else:
+                    await agent_or_session.generate_reply(
+                        instructions=f"Speak opening greeting immediately in Hindi: {greeting}",
+                        allow_interruptions=False
+                    )
+            logger.info("🔊 [GREETING SUCCESS] Opening greeting sent to room: %s", greeting)
             await _log("info", f"Opening greeting spoken to {caller_phone}")
         except Exception as exc:
-            logger.error("❌ [TTS ERROR] Failed to synthesize greeting: %s", exc)
+            logger.error("❌ [GREETING ERROR] Failed to speak opening greeting: %s", exc, exc_info=True)
             await _log("error", f"Failed to speak opening greeting: {exc}")
 
     @ctx.room.on("track_subscribed")
@@ -376,17 +407,20 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         return None, None, phone_number, lead_name, campaign_id, None
 
     await _log("info", f"Customer answered {phone_number} — starting AI session NOW")
-    agent_or_session, is_realtime = _build_agent_or_session(active_tools, system_prompt, tool_ctx)
+    agent_or_session = _build_agent_or_session(active_tools, system_prompt, tool_ctx)
+    is_pipeline = VoicePipelineAgent is not None and isinstance(agent_or_session, VoicePipelineAgent)
 
-    if is_realtime:
-        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
-    else:
+    if is_pipeline:
+        logger.info("Starting VoicePipelineAgent lifecycle...")
         if asyncio.iscoroutinefunction(getattr(agent_or_session, "start", None)):
             await agent_or_session.start(ctx.room)
         else:
             res = agent_or_session.start(ctx.room)
             if asyncio.iscoroutine(res):
                 await res
+    else:
+        logger.info("Starting AgentSession lifecycle with OutboundAssistant...")
+        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
 
     try:
         pub_count = len(ctx.room.local_participant.track_publications)
@@ -394,7 +428,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     except Exception:
         pass
 
-    if not is_realtime and hasattr(agent_or_session, "on"):
+    if is_pipeline and hasattr(agent_or_session, "on"):
         try:
             @agent_or_session.on("user_speech_committed")
             def _on_user_speech(msg):
@@ -418,16 +452,27 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         if greeting_fired:
             return
         greeting_fired = True
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.4)
         try:
-            if is_realtime:
-                await agent_or_session.generate_reply(instructions=f"Speak greeting in Hindi: {greeting}", allow_interruptions=False)
-            else:
+            if is_pipeline:
+                logger.info("Speaking greeting via VoicePipelineAgent.say: %s", greeting)
                 await agent_or_session.say(greeting, allow_interruptions=True)
-            logger.info("🔊 [TTS SUCCESS] Opening greeting sent to room: %s", greeting)
+            else:
+                logger.info("Speaking greeting via AgentSession...")
+                if hasattr(agent_or_session, "_running") and not agent_or_session._running:
+                    logger.warning("AgentSession was not running! Force starting now...")
+                    await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
+                if getattr(agent_or_session, "tts", None) is not None:
+                    await agent_or_session.say(greeting, allow_interruptions=True)
+                else:
+                    await agent_or_session.generate_reply(
+                        instructions=f"Speak opening greeting immediately in Hindi: {greeting}",
+                        allow_interruptions=False
+                    )
+            logger.info("🔊 [GREETING SUCCESS] Opening greeting sent to room: %s", greeting)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            logger.error("❌ [TTS ERROR] Failed to synthesize greeting: %s", exc)
+            logger.error("❌ [GREETING ERROR] Failed to speak opening greeting: %s", exc, exc_info=True)
             await _log("error", f"Failed to speak opening greeting: {exc}")
 
     @ctx.room.on("track_subscribed")
