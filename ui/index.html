@@ -2346,73 +2346,140 @@ window.topupWallet = async () => {
 };
 
 // Init with isolated execution blocks
-document.addEventListener('DOMContentLoaded', async () => {
-  // 1. Setup Tab Navigation FIRST (Always works immediately)
+document.addEventListener('DOMContentLoaded', () => {
+  // 1. Tab Navigation - Must initialize FIRST and NEVER fail
   try {
-    setupTabNavigation();
-    switchTab('tab-stats');
+    const tabLinks = document.querySelectorAll('.nav-link, .nav-tab, [data-tab], [data-target]');
+    tabLinks.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const targetId = btn.getAttribute('data-target') || btn.getAttribute('data-tab') || btn.dataset.target || btn.dataset.tab;
+        if (!targetId) return;
+
+        document.querySelectorAll('.nav-link, .nav-tab').forEach(l => l.classList.remove('active'));
+        document.querySelectorAll('.tab-pane, .tab-view, .tab-panel').forEach(p => {
+          p.classList.remove('active');
+          p.classList.add('hidden');
+          p.style.display = 'none';
+        });
+
+        btn.classList.add('active');
+        const targetEl = document.getElementById(targetId) || document.getElementById('view_' + targetId) || document.getElementById('tab-' + targetId);
+        if (targetEl) {
+          targetEl.classList.remove('hidden');
+          targetEl.classList.add('active');
+          targetEl.style.display = 'block';
+        }
+      });
+    });
+
+    const activeTab = document.querySelector('.nav-tab.active, .nav-link.active');
+    if (activeTab) {
+      const activeId = activeTab.getAttribute('data-target') || activeTab.getAttribute('data-tab');
+      const activeEl = document.getElementById(activeId) || document.getElementById('tab-' + activeId);
+      if (activeEl) {
+        activeEl.classList.add('active');
+        activeEl.style.display = 'block';
+      }
+    }
   } catch (err) {
-    console.error("Error setting up tabs:", err);
+    console.error("Tab setup error:", err);
   }
 
-  // 2. Load Stats & Overview independently
-  try {
-    await loadStats();
-  } catch (err) {
-    console.error("Error loading stats:", err);
-  }
+  // 2. Load Stats safely
+  (async () => {
+    try {
+      const res = await fetch('/api/stats');
+      if (res.ok) {
+        const data = await res.json();
+        const update = (id, val) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = (val !== undefined && val !== null) ? val : '0';
+        };
+        update('stat_total_calls', data.total_calls);
+        update('kpi-total', data.total_calls);
 
-  // 3. Load Settings & Model Info independently
-  try {
-    await loadSettings();
-  } catch (err) {
-    console.error("Error loading settings:", err);
-  }
+        update('stat_booked', data.booked);
+        update('kpi-booked', data.booked);
 
-  // 4. Load Outbound & Inbound Calls independently
-  try {
-    await loadOutboundCalls();
-  } catch (err) {
-    console.error("Error loading outbound calls:", err);
-  }
-  try {
-    await loadInboundCalls();
-  } catch (err) {
-    console.error("Error loading inbound calls:", err);
-  }
+        update('stat_not_interested', data.not_interested);
+        update('stat_not_interested', data.not_interested);
+        update('kpi-not-interested', data.not_interested);
 
-  // 5. Load Inbound Clients & Appointments independently
-  try {
-    await loadInboundClients();
-  } catch (err) {
-    console.error("Error loading inbound clients:", err);
-  }
-  try {
-    await loadAppointments();
-  } catch (err) {
-    console.error("Error loading appointments:", err);
-  }
+        const rateStr = (data.booking_rate || data.booking_rate_percent || 0) + '%';
+        update('stat_booking_rate', rateStr);
+        update('kpi-rate', rateStr);
 
-  // 6. Load Logs & Agent Profiles independently
-  try {
-    await loadLogs();
-  } catch (err) {
-    console.error("Error loading logs:", err);
-  }
-  try {
-    await loadAgentProfiles();
-  } catch (err) {
-    console.error("Error loading agent profiles:", err);
-  }
+        const durStr = (data.avg_duration || data.avg_duration_seconds || 0) + 's';
+        update('stat_avg_duration', durStr);
+        update('kpi-duration', durStr);
 
-  // 7. Wallet Check independently
-  try {
-    await checkWalletBalance();
-  } catch (err) {
-    console.error("Error checking wallet balance:", err);
-  }
+        try { _renderCharts(data); } catch(cErr) { console.warn("Chart render notice:", cErr); }
+      }
+    } catch (e) {
+      console.error("Stats load error:", e);
+    }
+  })();
 
-  // Background Periodic Refreshers
+  // 3. Load Settings & Model Badge safely
+  (async () => {
+    try {
+      const res = await fetch('/api/settings');
+      if (res.ok) {
+        const s = await res.json();
+        const getVal = (item) => {
+          if (!item) return null;
+          if (typeof item === 'object' && item.value !== undefined) return item.value;
+          if (typeof item === 'string') return item;
+          return null;
+        };
+        const model = getVal(s.GEMINI_MODEL) || "gemini-2.0-flash-exp";
+        const voice = getVal(s.TTS_VOICE) || "Aoede";
+        const engine = getVal(s.VOICE_ENGINE) || "gemini_realtime";
+
+        const badge = document.getElementById('active_model_badge') || document.querySelector('.model-badge');
+        if (badge) badge.textContent = "Model: " + model;
+
+        const chips = document.getElementById('live-config-chips');
+        if (chips) {
+          chips.innerHTML = `
+            <div class="chip">Model: ${model}</div>
+            <div class="chip">Voice: ${voice}</div>
+            <div class="chip">Engine: ${engine}</div>
+          `;
+        }
+
+        const setVal = (id, val) => {
+          const el = document.getElementById(id);
+          if (el && val) el.value = val;
+        };
+        setVal('voice_engine_select', engine);
+        setVal('gemini_model_select', model);
+        setVal('tts_voice_select', voice);
+        setVal('stt_model_select', getVal(s.STT_MODEL));
+
+        // Sync legacy inputs if present
+        setVal('set-voice-engine', engine);
+        setVal('set-voice-model', model);
+        setVal('set-voice-tts', voice);
+        setVal('set-voice-stt', getVal(s.STT_MODEL));
+      }
+    } catch (e) {
+      console.error("Settings load error:", e);
+    }
+  })();
+
+  // 4. Background view loaders independently
+  (async () => {
+    try { loadOutboundCalls(); } catch(e){}
+    try { loadInboundCalls(); } catch(e){}
+    try { loadInboundClients(); } catch(e){}
+    try { loadAppointments(); } catch(e){}
+    try { loadLogs(); } catch(e){}
+    try { loadAgentProfiles(); } catch(e){}
+    try { checkWalletBalance(); } catch(e){}
+  })();
+
   setInterval(() => {
     try { loadStats(); } catch(e){}
   }, 10000);
