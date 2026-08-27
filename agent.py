@@ -280,9 +280,9 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
     agent_or_session = _build_agent_or_session(active_tools, system_prompt, tool_ctx, voice_engine=voice_engine, tts_voice=tts_voice, gemini_model=gemini_model)
     is_pipeline = VoicePipelineAgent is not None and isinstance(agent_or_session, VoicePipelineAgent)
 
-    # 1. Start Session / Agent sequentially
+    # 1. Start Engine
     if is_pipeline:
-        logger.info("Starting Modular Pipeline (VoicePipelineAgent)...")
+        logger.info("🔊 [STARTING MODULAR PIPELINE]")
         if asyncio.iscoroutinefunction(getattr(agent_or_session, "start", None)):
             await agent_or_session.start(ctx.room)
         else:
@@ -290,12 +290,14 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
             if asyncio.iscoroutine(res):
                 await res
     else:
-        logger.info("Starting Gemini Realtime (AgentSession)...")
-        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
-        
-        # Wait until session._running is explicitly True (up to 2 seconds)
-        for _ in range(20):
-            if getattr(agent_or_session, "_running", True):
+        logger.info("🔊 [STARTING GEMINI REALTIME SESSION]")
+        await agent_or_session.start(
+            room=ctx.room,
+            agent=OutboundAssistant(instructions=system_prompt)
+        )
+        # Explicitly poll for session readiness (max 3.0 seconds)
+        for _ in range(30):
+            if getattr(agent_or_session, "_running", False) or getattr(agent_or_session, "is_running", False):
                 break
             await asyncio.sleep(0.1)
 
@@ -321,10 +323,10 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
         except Exception:
             pass
 
-    # 2. Synchronize audio stream buffer
-    await asyncio.sleep(0.6)
+    # 2. Allow room audio track to link
+    await asyncio.sleep(0.7)
 
-    # 3. Safe Opening Greeting execution
+    # 3. Dispatch opening greeting safely
     greeting = "Hello! Namaste, thank you for calling Kaamdhenu Real Estate. I am Priya, your AI property advisor. How may I assist you today?"
     greeting_fired = False
 
@@ -335,20 +337,20 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
         greeting_fired = True
         try:
             if is_pipeline:
-                logger.info("Speaking opening greeting via Modular Pipeline agent.say: %s", greeting)
                 await agent_or_session.say(greeting, allow_interruptions=True)
             else:
-                logger.info("Speaking opening greeting via Gemini Realtime generate_reply: %s", greeting)
+                if hasattr(agent_or_session, "_running") and not agent_or_session._running:
+                    logger.warning("Session still reporting not running, forcing start...")
+                    await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
                 await agent_or_session.generate_reply(
-                    instructions=f"Speak opening greeting immediately in Hindi: {greeting}",
+                    instructions=f"Speak opening greeting immediately in natural Hindi: {greeting}",
                     allow_interruptions=False
                 )
-            logger.info("🔊 [GREETING PLAYED]: %s", greeting)
+            logger.info("🔊 [GREETING DISPATCHED SUCCESSFULLY]: %s", greeting)
             await _log("info", f"Opening greeting spoken to {caller_phone}")
         except Exception as exc:
-            logger.error("⚠️ Greeting dispatch notice: %s", exc)
+            logger.error("⚠️ Greeting dispatch caught safely (agent will still listen to caller): %s", exc)
 
-    # Fire opening greeting sequentially
     asyncio.create_task(_speak_opening())
 
     call_start_time = time.time()
@@ -427,9 +429,9 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
     agent_or_session = _build_agent_or_session(active_tools, system_prompt, tool_ctx, voice_engine=voice_engine, tts_voice=tts_voice, gemini_model=gemini_model)
     is_pipeline = VoicePipelineAgent is not None and isinstance(agent_or_session, VoicePipelineAgent)
 
-    # 1. Start Session / Agent sequentially
+    # 1. Start Engine
     if is_pipeline:
-        logger.info("Starting Modular Pipeline (VoicePipelineAgent)...")
+        logger.info("🔊 [STARTING MODULAR PIPELINE]")
         if asyncio.iscoroutinefunction(getattr(agent_or_session, "start", None)):
             await agent_or_session.start(ctx.room)
         else:
@@ -437,12 +439,14 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             if asyncio.iscoroutine(res):
                 await res
     else:
-        logger.info("Starting Gemini Realtime (AgentSession)...")
-        await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
-        
-        # Wait until session._running is explicitly True (up to 2 seconds)
-        for _ in range(20):
-            if getattr(agent_or_session, "_running", True):
+        logger.info("🔊 [STARTING GEMINI REALTIME SESSION]")
+        await agent_or_session.start(
+            room=ctx.room,
+            agent=OutboundAssistant(instructions=system_prompt)
+        )
+        # Explicitly poll for session readiness (max 3.0 seconds)
+        for _ in range(30):
+            if getattr(agent_or_session, "_running", False) or getattr(agent_or_session, "is_running", False):
                 break
             await asyncio.sleep(0.1)
 
@@ -468,10 +472,10 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         except Exception:
             pass
 
-    # 2. Synchronize audio stream buffer
-    await asyncio.sleep(0.6)
+    # 2. Allow room audio track to link
+    await asyncio.sleep(0.7)
 
-    # 3. Safe Opening Greeting execution
+    # 3. Dispatch opening greeting safely
     greeting = f"Hello! Namaste {lead_name}, I am Priya calling from {business_name} regarding your inquiry for {service_type}. Am I speaking with {lead_name}?"
     greeting_fired = False
 
@@ -482,20 +486,20 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
         greeting_fired = True
         try:
             if is_pipeline:
-                logger.info("Speaking opening greeting via Modular Pipeline agent.say: %s", greeting)
                 await agent_or_session.say(greeting, allow_interruptions=True)
             else:
-                logger.info("Speaking opening greeting via Gemini Realtime generate_reply: %s", greeting)
+                if hasattr(agent_or_session, "_running") and not agent_or_session._running:
+                    logger.warning("Session still reporting not running, forcing start...")
+                    await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
                 await agent_or_session.generate_reply(
-                    instructions=f"Speak opening greeting immediately in Hindi: {greeting}",
+                    instructions=f"Speak opening greeting immediately in natural Hindi: {greeting}",
                     allow_interruptions=False
                 )
-            logger.info("🔊 [GREETING PLAYED]: %s", greeting)
+            logger.info("🔊 [GREETING DISPATCHED SUCCESSFULLY]: %s", greeting)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            logger.error("⚠️ Greeting dispatch notice: %s", exc)
+            logger.error("⚠️ Greeting dispatch caught safely (agent will still listen to caller): %s", exc)
 
-    # Fire opening greeting sequentially
     asyncio.create_task(_speak_opening())
 
     asyncio.create_task(complete_call_log(call_id, outcome="in_progress", reason="Call answered by customer", call_direction="outbound"))
