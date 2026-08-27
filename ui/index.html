@@ -896,35 +896,36 @@ tr:last-child td { border-bottom: none; }
             <label>Voice Engine Architecture (`VOICE_ENGINE`)</label>
             <select id="set-voice-engine">
               <option value="gemini_realtime">Gemini Realtime (Native Multimodal Audio - Sub-300ms)</option>
-              <option value="modular_pipeline">Modular Pipeline (Deepgram STT + Gemini Flash LLM + Google TTS)</option>
+              <option value="modular_pipeline">Modular Pipeline (Deepgram + Gemini LLM + Google Cloud TTS)</option>
             </select>
           </div>
           <div class="form-group">
             <label>LLM Reasoning Model (`GEMINI_MODEL`)</label>
             <select id="set-voice-model">
               <option value="gemini-2.0-flash">gemini-2.0-flash (Fast & Multilingual)</option>
-              <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (Experimental Features)</option>
+              <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp</option>
             </select>
           </div>
           <div class="form-group">
             <label>TTS Voice Synthesis (`TTS_VOICE`)</label>
             <select id="set-voice-tts">
               <optgroup label="Gemini Realtime Voices">
-                <option value="Aoede">Aoede — Gemini Female (Natural Hindi)</option>
-                <option value="Puck">Puck — Gemini Male (Natural Hindi)</option>
-                <option value="Charon">Charon — Gemini Deep Male</option>
+                <option value="Aoede">Aoede - Gemini Female (Natural Hindi)</option>
+                <option value="Puck">Puck - Gemini Male (Natural Hindi)</option>
+                <option value="Charon">Charon - Gemini Deep Male</option>
               </optgroup>
               <optgroup label="Google Cloud TTS Voices">
-                <option value="hi-IN-Neural2-A">hi-IN-Neural2-A — Google Cloud Neural Hindi Female</option>
-                <option value="hi-IN-Wavenet-D">hi-IN-Wavenet-D — Google Cloud Wavenet Hindi Male</option>
+                <option value="hi-IN-Neural2-A">hi-IN-Neural2-A - Google Cloud Hindi Female</option>
+                <option value="hi-IN-Wavenet-D">hi-IN-Wavenet-D - Google Cloud Hindi Male</option>
               </optgroup>
             </select>
           </div>
           <div class="form-group">
             <label>STT Speech Transcriber (`STT_MODEL`)</label>
             <select id="set-voice-stt">
-              <option value="nova-3">Deepgram nova-3 (Multi-lingual / Hindi)</option>
               <option value="gemini_native">Gemini Native Audio STT</option>
+              <option value="deepgram_nova3">Deepgram nova-3 (Multi-lingual / Hindi)</option>
+              <option value="nova-3">Deepgram nova-3 (Multi-lingual / Hindi)</option>
             </select>
           </div>
         </div>
