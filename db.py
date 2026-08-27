@@ -15,9 +15,9 @@ DEFAULTS = {
     "LIVEKIT_API_KEY":         os.getenv("LIVEKIT_API_KEY", ""),
     "LIVEKIT_API_SECRET":      os.getenv("LIVEKIT_API_SECRET", ""),
     "GOOGLE_API_KEY":          os.getenv("GOOGLE_API_KEY", ""),
-    "GEMINI_MODEL":            os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-    "GEMINI_TTS_VOICE":        os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A"),
-    "USE_GEMINI_REALTIME":     os.getenv("USE_GEMINI_REALTIME", "false"),
+    "GEMINI_MODEL":            os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
+    "GEMINI_TTS_VOICE":        os.getenv("GEMINI_TTS_VOICE", "Aoede"),
+    "USE_GEMINI_REALTIME":     os.getenv("USE_GEMINI_REALTIME", "true"),
     "VOBIZ_SIP_DOMAIN":        os.getenv("VOBIZ_SIP_DOMAIN", ""),
     "VOBIZ_USERNAME":          os.getenv("VOBIZ_USERNAME", ""),
     "VOBIZ_PASSWORD":          os.getenv("VOBIZ_PASSWORD", ""),
@@ -39,9 +39,9 @@ DEFAULTS = {
     "TWILIO_WA_FROM":          os.getenv("TWILIO_WA_FROM", ""),
     "WALLET_BALANCE":          os.getenv("WALLET_BALANCE", "0.0"),
     "LOW_BALANCE_THRESHOLD":   os.getenv("LOW_BALANCE_THRESHOLD", "500.0"),
-    "VOICE_ENGINE":            os.getenv("VOICE_ENGINE", "modular_pipeline"),
-    "TTS_VOICE":               os.getenv("TTS_VOICE", "hi-IN-Neural2-A"),
-    "STT_MODEL":                os.getenv("STT_MODEL", "nova-3"),
+    "VOICE_ENGINE":            os.getenv("VOICE_ENGINE", "gemini_realtime"),
+    "TTS_VOICE":               os.getenv("TTS_VOICE", "Aoede"),
+    "STT_MODEL":                os.getenv("STT_MODEL", "gemini_native"),
 }
 
 SENSITIVE_KEYS = {

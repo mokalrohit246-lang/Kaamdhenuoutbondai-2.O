@@ -109,11 +109,7 @@ async def _log(level: str, msg: str, detail: str = "") -> None:
 async def _get_voice_engine_config():
     """Fetch VOICE_ENGINE, TTS_VOICE, and GEMINI_MODEL dynamically from DB settings or environment variables."""
     engine_db = await get_setting("VOICE_ENGINE", "")
-    voice_engine = (engine_db or os.getenv("VOICE_ENGINE", "")).strip().lower()
-    
-    if not voice_engine:
-        use_realtime = os.getenv("USE_GEMINI_REALTIME", "false").lower() == "true"
-        voice_engine = "gemini_realtime" if use_realtime else "modular_pipeline"
+    voice_engine = (engine_db or os.getenv("VOICE_ENGINE", "gemini_realtime")).strip().lower()
         
     voice_db = await get_setting("TTS_VOICE", "") or await get_setting("GEMINI_TTS_VOICE", "")
     tts_voice = (voice_db or os.getenv("TTS_VOICE", "") or os.getenv("GEMINI_TTS_VOICE", "Aoede")).strip()
@@ -122,23 +118,20 @@ async def _get_voice_engine_config():
         tts_voice = "Aoede"
 
     model_db = await get_setting("GEMINI_MODEL", "")
-    gemini_model = (model_db or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).strip()
+    gemini_model = (model_db or os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")).strip()
         
     return voice_engine, tts_voice, gemini_model
 
 
 # ── Agent / Session Builder ──────────────────────────────────────────────────
 
-def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voice_engine: str = "modular_pipeline", tts_voice: str = "hi-IN-Neural2-A", gemini_model: str = "gemini-2.0-flash-exp"):
-    deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
-    
-    # Force gemini-2.0-flash-exp for Realtime bidiGenerateContent
+def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voice_engine: str = "gemini_realtime", tts_voice: str = "Aoede", gemini_model: str = "gemini-2.0-flash-exp"):
     realtime_model = "gemini-2.0-flash-exp"
-    modular_llm_model = "gemini-2.0-flash" if ("exp" not in gemini_model and gemini_model) else "gemini-2.0-flash"
+    modular_llm_model = "gemini-2.0-flash"
 
-    # ENGINE 1: GEMINI REALTIME (AgentSession + RealtimeModel)
-    if voice_engine == "gemini_realtime":
-        logger.info("ENGINE 1 ACTIVATED: Gemini Live Realtime (model=%s, voice=%s)", realtime_model, tts_voice)
+    # ENGINE 1 (PRIMARY): GEMINI REALTIME (AgentSession + RealtimeModel)
+    if voice_engine == "gemini_realtime" or VoicePipelineAgent is None:
+        logger.info("⚡ [GEMINI REALTIME ACTIVE]: model=%s, voice=%s", realtime_model, tts_voice)
         RealtimeClass = (
             getattr(getattr(google, "realtime", None), "RealtimeModel", None) or
             getattr(getattr(getattr(google, "beta", None), "realtime", None), "RealtimeModel", None)
@@ -152,77 +145,54 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voic
         elif google and hasattr(google, "LLM"):
             return AgentSession(llm=google.LLM(model=modular_llm_model), vad=GLOBAL_VAD, tools=tools)
 
-    # ENGINE 2: MODULAR PIPELINE (VoicePipelineAgent: Deepgram STT + Gemini Flash LLM + Google TTS)
-    if voice_engine == "modular_pipeline" and VoicePipelineAgent is not None:
-        logger.info("ENGINE 2 ACTIVATED: Modular Pipeline (Deepgram STT + Gemini LLM %s + Google TTS voice=%s)", modular_llm_model, tts_voice)
-        
-        # GCP Credentials Setup
-        google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
-        temp_cred_path = "/tmp/gcp_creds.json" if os.name != "nt" else os.path.join(tempfile.gettempdir(), "gcp_creds.json")
-        if google_json_str:
-            try:
-                with open(temp_cred_path, "w", encoding="utf-8") as f:
-                    f.write(google_json_str)
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_cred_path
-            except Exception as f_err:
-                logger.error("Failed writing GCP JSON: %s", f_err)
-
-        stt = None
-        if _deepgram_stt and deepgram_key:
-            try:
-                stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
-                logger.info("Deepgram STT initialized: model=nova-3")
-            except Exception as exc:
-                logger.error("Deepgram STT Init Error: %s", exc)
-
-        tts = None
-        if google and hasattr(google, "TTS"):
-            try:
-                tts = google.TTS(voice_name=tts_voice or "hi-IN-Neural2-A", language="hi-IN" if "hi-IN" in tts_voice else "en-IN")
-                logger.info("Google TTS initialized: voice=%s", tts_voice)
-            except Exception as tts_err:
-                logger.error("Google TTS Init Error: %s", tts_err)
-
-        llm_engine = None
-        if google and hasattr(google, "LLM"):
-            try:
-                llm_engine = google.LLM(model=modular_llm_model)
-                logger.info("Google LLM initialized: model=%s", modular_llm_model)
-            except Exception as llm_err:
-                logger.error("Google LLM Init Error: %s", llm_err)
-
-        initial_ctx = llm.ChatContext()
+    # ENGINE 2: MODULAR PIPELINE (Fallback)
+    logger.info("⚡ [MODULAR PIPELINE FALLBACK ACTIVE]: Deepgram STT + Gemini LLM %s + Google TTS voice=%s", modular_llm_model, tts_voice)
+    deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
+    
+    stt = None
+    if _deepgram_stt and deepgram_key:
         try:
-            initial_ctx.add_message(role="system", content=system_prompt)
-        except Exception:
-            try:
-                initial_ctx.append(role="system", text=system_prompt)
-            except Exception:
-                pass
+            stt = _deepgram_stt(api_key=deepgram_key, model="nova-3", language="multi")
+        except Exception as exc:
+            logger.error("Deepgram STT Init Error: %s", exc)
 
+    tts = None
+    if google and hasattr(google, "TTS"):
         try:
-            pipeline_agent = VoicePipelineAgent(
-                vad=GLOBAL_VAD,
-                stt=stt,
-                llm=llm_engine,
-                tts=tts,
-                chat_ctx=initial_ctx,
-                fnc_ctx=tool_ctx,
-            )
-            logger.info("VoicePipelineAgent built successfully.")
-            return pipeline_agent
-        except Exception as agent_err:
-            logger.error("Failed to construct VoicePipelineAgent, auto-falling back to Gemini Realtime: %s", agent_err)
+            tts = google.TTS(voice_name=tts_voice or "hi-IN-Neural2-A", language="hi-IN" if "hi-IN" in tts_voice else "en-IN")
+        except Exception as tts_err:
+            logger.error("Google TTS Init Error: %s", tts_err)
 
-    # SAFETY AUTO-FALLBACK: ENGINE 1 (Gemini Realtime AgentSession)
-    logger.info("SAFETY AUTO-FALLBACK: Gemini Realtime AgentSession Initializing")
+    llm_engine = None
+    if google and hasattr(google, "LLM"):
+        try:
+            llm_engine = google.LLM(model=modular_llm_model)
+        except Exception as llm_err:
+            logger.error("Google LLM Init Error: %s", llm_err)
+
+    initial_ctx = llm.ChatContext()
+    try:
+        initial_ctx.add_message(role="system", content=system_prompt)
+    except Exception:
+        pass
+
+    try:
+        return VoicePipelineAgent(
+            vad=GLOBAL_VAD,
+            stt=stt,
+            llm=llm_engine,
+            tts=tts,
+            chat_ctx=initial_ctx,
+            fnc_ctx=tool_ctx,
+        )
+    except Exception:
+        pass
+
+    # Safety Fallback
     RealtimeClass = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
     if RealtimeClass is not None:
-        try:
-            realtime_llm = RealtimeClass(model=realtime_model, voice="Aoede")
-            return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools)
-        except Exception:
-            pass
+        realtime_llm = RealtimeClass(model=realtime_model, voice="Aoede")
+        return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools)
     return AgentSession(llm=google.LLM(model=modular_llm_model) if google and hasattr(google, "LLM") else None, vad=GLOBAL_VAD, tools=tools)
 
 
