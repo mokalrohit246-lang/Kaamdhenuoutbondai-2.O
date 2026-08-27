@@ -885,6 +885,52 @@ tr:last-child td { border-bottom: none; }
   <!-- ⚙️ Settings Tab -->
   <section id="tab-settings" class="tab-panel">
     <div class="grid grid-2">
+      <!-- 🎙️ Voice Engine & Model Architecture (Vapi-Style) -->
+      <div class="card" style="grid-column: 1 / -1; border: 1px solid var(--accent); background: linear-gradient(135deg, rgba(0,255,136,0.03), rgba(0,204,255,0.03));">
+        <h3>🎙️ Voice Engine & Model Architecture (Vapi-Style) <span id="badge-voice" class="badge badge-configured" style="display:none">Active</span></h3>
+        <p style="font-size: 0.85rem; color: var(--text2); margin-bottom: 1rem;">
+          Configure the AI voice engine architecture, LLM reasoning model, TTS voice synthesis, and STT speech transcriber.
+        </p>
+        <div class="grid grid-2 gap-4">
+          <div class="form-group">
+            <label>Voice Engine Architecture (`VOICE_ENGINE`)</label>
+            <select id="set-voice-engine">
+              <option value="gemini_realtime">Gemini Realtime (Native Multimodal Audio - Sub-300ms)</option>
+              <option value="modular_pipeline">Modular Pipeline (Deepgram STT + Gemini Flash LLM + Google TTS)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>LLM Reasoning Model (`GEMINI_MODEL`)</label>
+            <select id="set-voice-model">
+              <option value="gemini-2.0-flash">gemini-2.0-flash (Fast & Multilingual)</option>
+              <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (Experimental Features)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>TTS Voice Synthesis (`TTS_VOICE`)</label>
+            <select id="set-voice-tts">
+              <optgroup label="Gemini Realtime Voices">
+                <option value="Aoede">Aoede — Gemini Female (Natural Hindi)</option>
+                <option value="Puck">Puck — Gemini Male (Natural Hindi)</option>
+                <option value="Charon">Charon — Gemini Deep Male</option>
+              </optgroup>
+              <optgroup label="Google Cloud TTS Voices">
+                <option value="hi-IN-Neural2-A">hi-IN-Neural2-A — Google Cloud Neural Hindi Female</option>
+                <option value="hi-IN-Wavenet-D">hi-IN-Wavenet-D — Google Cloud Wavenet Hindi Male</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>STT Speech Transcriber (`STT_MODEL`)</label>
+            <select id="set-voice-stt">
+              <option value="nova-3">Deepgram nova-3 (Multi-lingual / Hindi)</option>
+              <option value="gemini_native">Gemini Native Audio STT</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-sm btn-primary" style="margin-top:0.75rem;" onclick="saveVoiceArchitecture()">⚡ Save Voice Configuration</button>
+      </div>
+
       <!-- LiveKit -->
       <div class="card">
         <h3>LiveKit <span id="badge-lk" class="badge badge-configured" style="display:none">Configured</span></h3>
@@ -1914,7 +1960,11 @@ const SETTINGS_MAP = {
   'set-wa-from':'TWILIO_WA_FROM',
   'set-cal-key':'CALCOM_API_KEY',
   'set-cal-event':'CALCOM_EVENT_TYPE_ID',
-  'set-cal-tz':'CALCOM_TIMEZONE'
+  'set-cal-tz':'CALCOM_TIMEZONE',
+  'set-voice-engine':'VOICE_ENGINE',
+  'set-voice-model':'GEMINI_MODEL',
+  'set-voice-tts':'TTS_VOICE',
+  'set-voice-stt':'STT_MODEL'
 };
 
 async function loadSettings() {
@@ -1947,6 +1997,7 @@ async function loadSettings() {
     if ($('badge-wa'))     $('badge-wa').style.display = (d.TWILIO_WA_SID?.configured || d.TWILIO_WA_FROM?.configured) ? 'inline-block' : 'none';
     if ($('badge-s3'))     $('badge-s3').style.display = (d.S3_ACCESS_KEY_ID?.configured || d.S3_BUCKET?.configured) ? 'inline-block' : 'none';
     if ($('badge-cal'))    $('badge-cal').style.display = (d.CALCOM_API_KEY?.configured) ? 'inline-block' : 'none';
+    if ($('badge-voice'))  $('badge-voice').style.display = (d.VOICE_ENGINE?.configured || d.TTS_VOICE?.configured) ? 'inline-block' : 'none';
 
     // Load enabled tools
     const et = d.ENABLED_TOOLS;
@@ -1962,6 +2013,25 @@ async function loadSettings() {
     console.warn("Could not load settings:", err);
   }
 }
+
+window.saveVoiceArchitecture = async () => {
+  const payload = {
+    VOICE_ENGINE: $('set-voice-engine').value,
+    GEMINI_MODEL: $('set-voice-model').value,
+    TTS_VOICE: $('set-voice-tts').value,
+    STT_MODEL: $('set-voice-stt').value,
+    GEMINI_TTS_VOICE: $('set-voice-tts').value,
+    USE_GEMINI_REALTIME: ($('set-voice-engine').value === 'gemini_realtime') ? 'true' : 'false'
+  };
+  try {
+    toast('Saving Voice Architecture Configuration...', 'info');
+    await apiPost('/api/settings', payload);
+    toast('Voice Configuration Saved Successfully!', 'ok');
+    loadSettings();
+  } catch (e) {
+    toast('Failed to save voice settings: ' + (e.message || e), 'err');
+  }
+};
 
 window.saveSettingsGroup = async (group, formIds) => {
   const settings = {};
