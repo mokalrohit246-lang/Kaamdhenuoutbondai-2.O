@@ -1365,99 +1365,163 @@ function getBadgeHtml(outcome) {
 }
 
 // Navigation
-function switchTab(targetId) {
-  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  
-  const tab = document.querySelector(`.nav-tab[data-target="${targetId}"]`);
-  if (tab) tab.classList.add('active');
-  $(targetId).classList.add('active');
-  
-  // Specific load logic on tab switch
-  if(targetId === 'tab-stats') loadStats();
-  if(targetId === 'tab-prompt') loadPrompt();
-  if(targetId === 'tab-settings') { loadSettings(); loadInboundClients(); }
-  if(targetId === 'tab-campaigns') loadCampaigns();
-  if(targetId === 'tab-crm') loadCRM();
-  if(targetId === 'tab-logs-outbound') loadOutboundCalls();
-  if(targetId === 'tab-logs-inbound') loadInboundCalls();
-  if(targetId === 'tab-system-logs') { loadLogs(); loadWALogs(); }
-  if(targetId === 'tab-costs') calcCost();
+function setupTabNavigation() {
+  const navLinks = document.querySelectorAll('.nav-tab, .nav-link, [data-target], [data-tab]');
+  navLinks.forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetId = link.getAttribute('data-target') || link.getAttribute('data-tab') || link.dataset.target || link.dataset.tab;
+      if (!targetId) return;
+
+      document.querySelectorAll('.nav-tab, .nav-link').forEach(l => l.classList.remove('active'));
+      document.querySelectorAll('.tab-panel, .tab-pane, .tab-view').forEach(p => {
+        p.classList.remove('active');
+        p.style.display = 'none';
+      });
+
+      link.classList.add('active');
+      const targetView = document.getElementById(targetId) || document.getElementById('tab-' + targetId) || document.getElementById('view_' + targetId);
+      if (targetView) {
+        targetView.classList.add('active');
+        targetView.style.display = 'block';
+      }
+
+      // Execute view-specific loaders safely
+      try {
+        if(targetId === 'tab-stats' || targetId === 'stats') loadStats();
+        if(targetId === 'tab-prompt' || targetId === 'prompt') loadPrompt();
+        if(targetId === 'tab-settings' || targetId === 'settings') { loadSettings(); loadInboundClients(); }
+        if(targetId === 'tab-campaigns' || targetId === 'campaigns') loadCampaigns();
+        if(targetId === 'tab-crm' || targetId === 'crm') loadCRM();
+        if(targetId === 'tab-logs-outbound' || targetId === 'logs-outbound') loadOutboundCalls();
+        if(targetId === 'tab-logs-inbound' || targetId === 'logs-inbound') loadInboundCalls();
+        if(targetId === 'tab-system-logs' || targetId === 'system-logs') { loadLogs(); loadWALogs(); }
+        if(targetId === 'tab-costs' || targetId === 'costs') calcCost();
+      } catch (err) {
+        console.error("Error executing tab loader for " + targetId + ":", err);
+      }
+    });
+  });
 }
 
-document.querySelectorAll('.nav-tab').forEach(tab => {
-  tab.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.target));
-});
+function switchTab(targetId) {
+  const link = document.querySelector(`.nav-tab[data-target="${targetId}"], [data-tab="${targetId}"]`);
+  if (link) {
+    link.click();
+  } else {
+    document.querySelectorAll('.tab-panel, .tab-pane, .tab-view').forEach(p => {
+      p.classList.remove('active');
+      p.style.display = 'none';
+    });
+    const targetView = $(targetId) || $('tab-' + targetId);
+    if (targetView) {
+      targetView.classList.add('active');
+      targetView.style.display = 'block';
+    }
+  }
+}
 
 // Chart instances
 let charts = {};
 
 async function loadStats() {
-  const d = await api('/api/stats');
-  $('kpi-total').innerText = d.total_calls || 0;
-  $('kpi-booked').innerText = d.booked || 0;
-  $('kpi-not-interested').innerText = d.not_interested || 0;
-  $('kpi-rate').innerText = (d.booking_rate_percent || 0) + '%';
-  $('kpi-duration').innerText = d.avg_duration_seconds ? d.avg_duration_seconds + 's' : '0s';
-  
-  loadLiveConfig();
-  _renderCharts(d);
+  try {
+    const d = await api('/api/stats');
+    if ($('kpi-total')) $('kpi-total').innerText = d.total_calls || 0;
+    if ($('kpi-booked')) $('kpi-booked').innerText = d.booked || 0;
+    if ($('kpi-not-interested')) $('kpi-not-interested').innerText = d.not_interested || 0;
+    if ($('kpi-rate')) $('kpi-rate').innerText = (d.booking_rate_percent || 0) + '%';
+    if ($('kpi-duration')) $('kpi-duration').innerText = d.avg_duration_seconds ? d.avg_duration_seconds + 's' : '0s';
+    
+    await loadLiveConfig();
+    _renderCharts(d);
+  } catch (err) {
+    console.error("Error loading stats:", err);
+  }
 }
 
 async function loadLiveConfig() {
-  const d = await api('/api/settings');
-  const model = (d.GEMINI_MODEL && d.GEMINI_MODEL.value) || 'gemini-3.1-flash-live-preview';
-  const voice = (d.GEMINI_TTS_VOICE && d.GEMINI_TTS_VOICE.value) || 'Aoede';
-  const rt = (d.USE_GEMINI_REALTIME && d.USE_GEMINI_REALTIME.value) || 'true';
-  $('live-config-chips').innerHTML = `
-    <div class="chip">Model: ${model}</div>
-    <div class="chip">Voice: ${voice}</div>
-    <div class="chip">Mode: ${rt === 'true' ? 'Realtime' : 'Pipeline'}</div>
-  `;
+  try {
+    const d = await api('/api/settings');
+    const model = (d.GEMINI_MODEL && (typeof d.GEMINI_MODEL === 'object' ? d.GEMINI_MODEL.value : d.GEMINI_MODEL)) || 'gemini-2.0-flash-exp';
+    const voice = (d.TTS_VOICE && (typeof d.TTS_VOICE === 'object' ? d.TTS_VOICE.value : d.TTS_VOICE)) || 'Aoede';
+    const rt = (d.VOICE_ENGINE && (typeof d.VOICE_ENGINE === 'object' ? d.VOICE_ENGINE.value : d.VOICE_ENGINE)) || 'gemini_realtime';
+    
+    if ($('live-config-chips')) {
+      $('live-config-chips').innerHTML = `
+        <div class="chip">Model: ${model}</div>
+        <div class="chip">Voice: ${voice}</div>
+        <div class="chip">Engine: ${rt}</div>
+      `;
+    }
+
+    const modelEl = document.getElementById('active_model_badge') || document.querySelector('.model-badge');
+    if (modelEl) {
+      modelEl.textContent = "Model: " + model;
+    }
+  } catch (err) {
+    console.warn("Could not load live config:", err);
+  }
 }
 
 function _renderCharts(d) {
+  if (typeof Chart === 'undefined') return;
   Chart.defaults.color = '#aaa';
   Chart.defaults.borderColor = 'rgba(255,255,255,0.05)';
   
   // Outcomes Donut
-  const oc = d.outcomes || {};
-  const ocLabels = Object.keys(oc);
-  const ocData = Object.values(oc);
-  const ocColors = ocLabels.map(l => l==='booked'?'rgba(212,175,55,0.8)':l==='not_interested'?'rgba(255,77,77,0.8)':l==='voicemail'?'rgba(255,170,0,0.8)':'rgba(100,100,100,0.8)');
-  const ocCtx = $('chart-outcomes').getContext('2d');
-  if(charts.outcomes) charts.outcomes.destroy();
-  charts.outcomes = new Chart(ocCtx, {
-    type: 'doughnut',
-    data: { labels: ocLabels, datasets: [{ data: ocData, backgroundColor: ocColors, borderWidth: 0 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
-  });
+  const chartOutcomesEl = $('chart-outcomes');
+  if (chartOutcomesEl && chartOutcomesEl.getContext) {
+    try {
+      const oc = d.outcomes || {};
+      const ocLabels = Object.keys(oc);
+      const ocData = Object.values(oc);
+      const ocColors = ocLabels.map(l => l==='booked'?'rgba(212,175,55,0.8)':l==='not_interested'?'rgba(255,77,77,0.8)':l==='voicemail'?'rgba(255,170,0,0.8)':'rgba(100,100,100,0.8)');
+      const ocCtx = chartOutcomesEl.getContext('2d');
+      if(charts.outcomes) charts.outcomes.destroy();
+      charts.outcomes = new Chart(ocCtx, {
+        type: 'doughnut',
+        data: { labels: ocLabels, datasets: [{ data: ocData, backgroundColor: ocColors, borderWidth: 0 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
+      });
+    } catch(e) { console.warn("Chart outcomes render error:", e); }
+  }
 
   // Timeline Line
-  const tl = d.timeline || [];
-  const tlCtx = $('chart-timeline').getContext('2d');
-  if(charts.timeline) charts.timeline.destroy();
-  charts.timeline = new Chart(tlCtx, {
-    type: 'line',
-    data: {
-      labels: tl.map(t => t.date.slice(5)),
-      datasets: [{ label: 'Calls Made', data: tl.map(t => t.count), borderColor: '#D4AF37', backgroundColor: 'rgba(212,175,55,0.1)', fill: true, tension: 0.4 }]
-    },
-    options: { responsive: true, maintainAspectRatio: false }
-  });
+  const chartTimelineEl = $('chart-timeline');
+  if (chartTimelineEl && chartTimelineEl.getContext) {
+    try {
+      const tl = d.timeline || [];
+      const tlCtx = chartTimelineEl.getContext('2d');
+      if(charts.timeline) charts.timeline.destroy();
+      charts.timeline = new Chart(tlCtx, {
+        type: 'line',
+        data: {
+          labels: tl.map(t => t.date ? t.date.slice(5) : ''),
+          datasets: [{ label: 'Calls Made', data: tl.map(t => t.count), borderColor: '#D4AF37', backgroundColor: 'rgba(212,175,55,0.1)', fill: true, tension: 0.4 }]
+        },
+        options: { responsive: true, maintainAspectRatio: false }
+      });
+    } catch(e) { console.warn("Chart timeline render error:", e); }
+  }
 
   // Duration Bar
-  const dbo = d.duration_by_outcome || {};
-  const drCtx = $('chart-duration').getContext('2d');
-  if(charts.duration) charts.duration.destroy();
-  charts.duration = new Chart(drCtx, {
-    type: 'bar',
-    data: {
-      labels: Object.keys(dbo),
-      datasets: [{ label: 'Avg Duration (s)', data: Object.values(dbo).map(v=>Math.round(v)), backgroundColor: 'rgba(0,240,255,0.6)' }]
-    },
-    options: { responsive: true, maintainAspectRatio: false }
-  });
+  const chartDurationEl = $('chart-duration');
+  if (chartDurationEl && chartDurationEl.getContext) {
+    try {
+      const dbo = d.duration_by_outcome || {};
+      const drCtx = chartDurationEl.getContext('2d');
+      if(charts.duration) charts.duration.destroy();
+      charts.duration = new Chart(drCtx, {
+        type: 'bar',
+        data: {
+          labels: Object.keys(dbo),
+          datasets: [{ label: 'Avg Duration (s)', data: Object.values(dbo).map(v=>Math.round(v)), backgroundColor: 'rgba(0,240,255,0.6)' }]
+        },
+        options: { responsive: true, maintainAspectRatio: false }
+      });
+    } catch(e) { console.warn("Chart duration render error:", e); }
+  }
 }
 
 // Single Call
@@ -2281,22 +2345,88 @@ window.topupWallet = async () => {
   }
 };
 
-// Init
-function init() {
-  switchTab('tab-stats');
-  loadStats();
-  loadOutboundCalls();
-  loadInboundCalls();
-  loadInboundClients();
-  loadAppointments();
-  loadLogs();
-  loadAgentProfiles();
-  checkWalletBalance();
-  setInterval(loadStats, 10000);
-  setInterval(checkWalletBalance, 15000);
-  scheduleLogsRefresh();
-}
-document.addEventListener('DOMContentLoaded', init);
+// Init with isolated execution blocks
+document.addEventListener('DOMContentLoaded', async () => {
+  // 1. Setup Tab Navigation FIRST (Always works immediately)
+  try {
+    setupTabNavigation();
+    switchTab('tab-stats');
+  } catch (err) {
+    console.error("Error setting up tabs:", err);
+  }
+
+  // 2. Load Stats & Overview independently
+  try {
+    await loadStats();
+  } catch (err) {
+    console.error("Error loading stats:", err);
+  }
+
+  // 3. Load Settings & Model Info independently
+  try {
+    await loadSettings();
+  } catch (err) {
+    console.error("Error loading settings:", err);
+  }
+
+  // 4. Load Outbound & Inbound Calls independently
+  try {
+    await loadOutboundCalls();
+  } catch (err) {
+    console.error("Error loading outbound calls:", err);
+  }
+  try {
+    await loadInboundCalls();
+  } catch (err) {
+    console.error("Error loading inbound calls:", err);
+  }
+
+  // 5. Load Inbound Clients & Appointments independently
+  try {
+    await loadInboundClients();
+  } catch (err) {
+    console.error("Error loading inbound clients:", err);
+  }
+  try {
+    await loadAppointments();
+  } catch (err) {
+    console.error("Error loading appointments:", err);
+  }
+
+  // 6. Load Logs & Agent Profiles independently
+  try {
+    await loadLogs();
+  } catch (err) {
+    console.error("Error loading logs:", err);
+  }
+  try {
+    await loadAgentProfiles();
+  } catch (err) {
+    console.error("Error loading agent profiles:", err);
+  }
+
+  // 7. Wallet Check independently
+  try {
+    await checkWalletBalance();
+  } catch (err) {
+    console.error("Error checking wallet balance:", err);
+  }
+
+  // Background Periodic Refreshers
+  setInterval(() => {
+    try { loadStats(); } catch(e){}
+  }, 10000);
+
+  setInterval(() => {
+    try { checkWalletBalance(); } catch(e){}
+  }, 15000);
+
+  try {
+    scheduleLogsRefresh();
+  } catch (err) {
+    console.error("Error scheduling log refresh:", err);
+  }
+});
 
 </script>
 </body>
