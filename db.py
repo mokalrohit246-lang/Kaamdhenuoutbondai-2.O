@@ -109,17 +109,18 @@ def init_db() -> None:
         try:
             res = db.table("settings").select("key").in_("key", ["VOICE_ENGINE", "TTS_VOICE", "GEMINI_MODEL", "STT_MODEL"]).execute()
             found_keys = [r["key"] for r in (res.data or [])]
+            now_iso = datetime.now().isoformat()
             to_insert = []
             if "VOICE_ENGINE" not in found_keys:
-                to_insert.append({"key": "VOICE_ENGINE", "value": os.getenv("VOICE_ENGINE", "modular_pipeline")})
+                to_insert.append({"key": "VOICE_ENGINE", "value": os.getenv("VOICE_ENGINE", "modular_pipeline"), "updated_at": now_iso})
             if "TTS_VOICE" not in found_keys:
-                to_insert.append({"key": "TTS_VOICE", "value": os.getenv("TTS_VOICE", "hi-IN-Neural2-A")})
+                to_insert.append({"key": "TTS_VOICE", "value": os.getenv("TTS_VOICE", "hi-IN-Neural2-A"), "updated_at": now_iso})
             if "GEMINI_MODEL" not in found_keys:
-                to_insert.append({"key": "GEMINI_MODEL", "value": os.getenv("GEMINI_MODEL", "gemini-2.0-flash")})
+                to_insert.append({"key": "GEMINI_MODEL", "value": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"), "updated_at": now_iso})
             if "STT_MODEL" not in found_keys:
-                to_insert.append({"key": "STT_MODEL", "value": os.getenv("STT_MODEL", "nova-3")})
+                to_insert.append({"key": "STT_MODEL", "value": os.getenv("STT_MODEL", "nova-3"), "updated_at": now_iso})
             if to_insert:
-                db.table("settings").upsert(to_insert).execute()
+                db.table("settings").upsert(to_insert, on_conflict="key").execute()
                 logger.info("Auto-seeded default settings: %s", to_insert)
         except Exception as seed_exc:
             logger.warning("Could not auto-seed default settings: %s", seed_exc)

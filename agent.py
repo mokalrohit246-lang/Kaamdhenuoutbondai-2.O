@@ -129,29 +129,32 @@ async def _get_voice_engine_config():
 
 # ── Agent / Session Builder ──────────────────────────────────────────────────
 
-def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voice_engine: str = "modular_pipeline", tts_voice: str = "hi-IN-Neural2-A", gemini_model: str = "gemini-2.0-flash"):
+def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voice_engine: str = "modular_pipeline", tts_voice: str = "hi-IN-Neural2-A", gemini_model: str = "gemini-2.0-flash-exp"):
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
-    valid_llm_model = "gemini-2.0-flash" if ("3.1" in gemini_model or "preview" in gemini_model or not gemini_model) else gemini_model
+    
+    # Force gemini-2.0-flash-exp for Realtime bidiGenerateContent
+    realtime_model = "gemini-2.0-flash-exp"
+    modular_llm_model = "gemini-2.0-flash" if ("exp" not in gemini_model and gemini_model) else "gemini-2.0-flash"
 
     # ENGINE 1: GEMINI REALTIME (AgentSession + RealtimeModel)
     if voice_engine == "gemini_realtime":
-        logger.info("ENGINE 1 ACTIVATED: Gemini Live Realtime (model=%s, voice=%s)", valid_llm_model, tts_voice)
+        logger.info("ENGINE 1 ACTIVATED: Gemini Live Realtime (model=%s, voice=%s)", realtime_model, tts_voice)
         RealtimeClass = (
             getattr(getattr(google, "realtime", None), "RealtimeModel", None) or
             getattr(getattr(getattr(google, "beta", None), "realtime", None), "RealtimeModel", None)
         )
         if RealtimeClass is not None:
             try:
-                realtime_llm = RealtimeClass(model=valid_llm_model, voice=tts_voice or "Aoede", instructions=system_prompt)
+                realtime_llm = RealtimeClass(model=realtime_model, voice=tts_voice or "Aoede", instructions=system_prompt)
             except Exception:
-                realtime_llm = RealtimeClass(model=valid_llm_model)
+                realtime_llm = RealtimeClass(model=realtime_model, voice=tts_voice or "Aoede")
             return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools)
         elif google and hasattr(google, "LLM"):
-            return AgentSession(llm=google.LLM(model=valid_llm_model), vad=GLOBAL_VAD, tools=tools)
+            return AgentSession(llm=google.LLM(model=modular_llm_model), vad=GLOBAL_VAD, tools=tools)
 
     # ENGINE 2: MODULAR PIPELINE (VoicePipelineAgent: Deepgram STT + Gemini Flash LLM + Google TTS)
     if voice_engine == "modular_pipeline" and VoicePipelineAgent is not None:
-        logger.info("ENGINE 2 ACTIVATED: Modular Pipeline (Deepgram STT + Gemini LLM %s + Google TTS voice=%s)", valid_llm_model, tts_voice)
+        logger.info("ENGINE 2 ACTIVATED: Modular Pipeline (Deepgram STT + Gemini LLM %s + Google TTS voice=%s)", modular_llm_model, tts_voice)
         
         # GCP Credentials Setup
         google_json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
@@ -183,8 +186,8 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voic
         llm_engine = None
         if google and hasattr(google, "LLM"):
             try:
-                llm_engine = google.LLM(model=valid_llm_model)
-                logger.info("Google LLM initialized: model=%s", valid_llm_model)
+                llm_engine = google.LLM(model=modular_llm_model)
+                logger.info("Google LLM initialized: model=%s", modular_llm_model)
             except Exception as llm_err:
                 logger.error("Google LLM Init Error: %s", llm_err)
 
@@ -216,11 +219,11 @@ def _build_agent_or_session(tools: list, system_prompt: str, tool_ctx=None, voic
     RealtimeClass = getattr(getattr(google, "realtime", None), "RealtimeModel", None)
     if RealtimeClass is not None:
         try:
-            realtime_llm = RealtimeClass(model=valid_llm_model, voice="Aoede")
+            realtime_llm = RealtimeClass(model=realtime_model, voice="Aoede")
             return AgentSession(llm=realtime_llm, vad=GLOBAL_VAD, tools=tools)
         except Exception:
             pass
-    return AgentSession(llm=google.LLM(model=valid_llm_model) if google and hasattr(google, "LLM") else None, vad=GLOBAL_VAD, tools=tools)
+    return AgentSession(llm=google.LLM(model=modular_llm_model) if google and hasattr(google, "LLM") else None, vad=GLOBAL_VAD, tools=tools)
 
 
 class OutboundAssistant(Agent):
