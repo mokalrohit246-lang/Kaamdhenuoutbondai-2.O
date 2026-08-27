@@ -15,9 +15,9 @@ DEFAULTS = {
     "LIVEKIT_API_KEY":         os.getenv("LIVEKIT_API_KEY", ""),
     "LIVEKIT_API_SECRET":      os.getenv("LIVEKIT_API_SECRET", ""),
     "GOOGLE_API_KEY":          os.getenv("GOOGLE_API_KEY", ""),
-    "GEMINI_MODEL":            os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
-    "GEMINI_TTS_VOICE":        os.getenv("GEMINI_TTS_VOICE", "Aoede"),
-    "USE_GEMINI_REALTIME":     os.getenv("USE_GEMINI_REALTIME", "true"),
+    "GEMINI_MODEL":            os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+    "GEMINI_TTS_VOICE":        os.getenv("GEMINI_TTS_VOICE", "hi-IN-Neural2-A"),
+    "USE_GEMINI_REALTIME":     os.getenv("USE_GEMINI_REALTIME", "false"),
     "VOBIZ_SIP_DOMAIN":        os.getenv("VOBIZ_SIP_DOMAIN", ""),
     "VOBIZ_USERNAME":          os.getenv("VOBIZ_USERNAME", ""),
     "VOBIZ_PASSWORD":          os.getenv("VOBIZ_PASSWORD", ""),
@@ -39,8 +39,9 @@ DEFAULTS = {
     "TWILIO_WA_FROM":          os.getenv("TWILIO_WA_FROM", ""),
     "WALLET_BALANCE":          os.getenv("WALLET_BALANCE", "0.0"),
     "LOW_BALANCE_THRESHOLD":   os.getenv("LOW_BALANCE_THRESHOLD", "500.0"),
-    "VOICE_ENGINE":            os.getenv("VOICE_ENGINE", "gemini_realtime"),
-    "TTS_VOICE":               os.getenv("TTS_VOICE", "Aoede"),
+    "VOICE_ENGINE":            os.getenv("VOICE_ENGINE", "modular_pipeline"),
+    "TTS_VOICE":               os.getenv("TTS_VOICE", "hi-IN-Neural2-A"),
+    "STT_MODEL":                os.getenv("STT_MODEL", "nova-3"),
 }
 
 SENSITIVE_KEYS = {
@@ -106,13 +107,17 @@ def init_db() -> None:
 
         # Auto-seed default settings if missing
         try:
-            res = db.table("settings").select("key").in_("key", ["VOICE_ENGINE", "TTS_VOICE"]).execute()
+            res = db.table("settings").select("key").in_("key", ["VOICE_ENGINE", "TTS_VOICE", "GEMINI_MODEL", "STT_MODEL"]).execute()
             found_keys = [r["key"] for r in (res.data or [])]
             to_insert = []
             if "VOICE_ENGINE" not in found_keys:
-                to_insert.append({"key": "VOICE_ENGINE", "value": os.getenv("VOICE_ENGINE", "gemini_realtime")})
+                to_insert.append({"key": "VOICE_ENGINE", "value": os.getenv("VOICE_ENGINE", "modular_pipeline")})
             if "TTS_VOICE" not in found_keys:
-                to_insert.append({"key": "TTS_VOICE", "value": os.getenv("TTS_VOICE", "Aoede")})
+                to_insert.append({"key": "TTS_VOICE", "value": os.getenv("TTS_VOICE", "hi-IN-Neural2-A")})
+            if "GEMINI_MODEL" not in found_keys:
+                to_insert.append({"key": "GEMINI_MODEL", "value": os.getenv("GEMINI_MODEL", "gemini-2.0-flash")})
+            if "STT_MODEL" not in found_keys:
+                to_insert.append({"key": "STT_MODEL", "value": os.getenv("STT_MODEL", "nova-3")})
             if to_insert:
                 db.table("settings").upsert(to_insert).execute()
                 logger.info("Auto-seeded default settings: %s", to_insert)

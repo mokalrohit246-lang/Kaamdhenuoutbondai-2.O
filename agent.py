@@ -339,9 +339,6 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
                 await agent_or_session.say(greeting, allow_interruptions=True)
             else:
                 logger.info("Speaking opening greeting via Gemini Realtime generate_reply: %s", greeting)
-                if hasattr(agent_or_session, "_running") and not agent_or_session._running:
-                    logger.warning("AgentSession was not running! Force starting now...")
-                    await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
                 await agent_or_session.generate_reply(
                     instructions=f"Speak opening greeting immediately in Hindi: {greeting}",
                     allow_interruptions=False
@@ -349,8 +346,7 @@ async def _handle_inbound(ctx: agents.JobContext, metadata: dict, call_id: str, 
             logger.info("🔊 [GREETING PLAYED]: %s", greeting)
             await _log("info", f"Opening greeting spoken to {caller_phone}")
         except Exception as exc:
-            logger.error("⚠️ Greeting dispatch skipped, agent is actively listening: %s", exc)
-            await _log("error", f"Greeting dispatch notice: {exc}")
+            logger.error("⚠️ Greeting dispatch notice: %s", exc)
 
     # Fire opening greeting sequentially
     asyncio.create_task(_speak_opening())
@@ -490,9 +486,6 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
                 await agent_or_session.say(greeting, allow_interruptions=True)
             else:
                 logger.info("Speaking opening greeting via Gemini Realtime generate_reply: %s", greeting)
-                if hasattr(agent_or_session, "_running") and not agent_or_session._running:
-                    logger.warning("AgentSession was not running! Force starting now...")
-                    await agent_or_session.start(room=ctx.room, agent=OutboundAssistant(instructions=system_prompt))
                 await agent_or_session.generate_reply(
                     instructions=f"Speak opening greeting immediately in Hindi: {greeting}",
                     allow_interruptions=False
@@ -500,8 +493,7 @@ async def _handle_outbound(ctx: agents.JobContext, metadata: dict, call_id: str,
             logger.info("🔊 [GREETING PLAYED]: %s", greeting)
             await _log("info", f"Opening greeting spoken to {phone_number}")
         except Exception as exc:
-            logger.error("⚠️ Greeting dispatch skipped, agent is actively listening: %s", exc)
-            await _log("error", f"Greeting dispatch notice: {exc}")
+            logger.error("⚠️ Greeting dispatch notice: %s", exc)
 
     # Fire opening greeting sequentially
     asyncio.create_task(_speak_opening())
