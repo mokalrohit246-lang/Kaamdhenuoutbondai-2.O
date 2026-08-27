@@ -39,6 +39,8 @@ DEFAULTS = {
     "TWILIO_WA_FROM":          os.getenv("TWILIO_WA_FROM", ""),
     "WALLET_BALANCE":          os.getenv("WALLET_BALANCE", "0.0"),
     "LOW_BALANCE_THRESHOLD":   os.getenv("LOW_BALANCE_THRESHOLD", "500.0"),
+    "VOICE_ENGINE":            os.getenv("VOICE_ENGINE", "gemini_realtime"),
+    "TTS_VOICE":               os.getenv("TTS_VOICE", "Aoede"),
 }
 
 SENSITIVE_KEYS = {
@@ -102,6 +104,21 @@ def init_db() -> None:
         except Exception as b_exc:
             logger.warning("Storage bucket auto-init notice: %s", b_exc)
 
+        # Auto-seed default settings if missing
+        try:
+            res = db.table("settings").select("key").in_("key", ["VOICE_ENGINE", "TTS_VOICE"]).execute()
+            found_keys = [r["key"] for r in (res.data or [])]
+            to_insert = []
+            if "VOICE_ENGINE" not in found_keys:
+                to_insert.append({"key": "VOICE_ENGINE", "value": os.getenv("VOICE_ENGINE", "gemini_realtime")})
+            if "TTS_VOICE" not in found_keys:
+                to_insert.append({"key": "TTS_VOICE", "value": os.getenv("TTS_VOICE", "Aoede")})
+            if to_insert:
+                db.table("settings").upsert(to_insert).execute()
+                logger.info("Auto-seeded default settings: %s", to_insert)
+        except Exception as seed_exc:
+            logger.warning("Could not auto-seed default settings: %s", seed_exc)
+
     except Exception as exc:
         logger.warning("Supabase connection warning: %s", exc)
         logger.warning("Run supabase_schema.sql in your Supabase Dashboard -> SQL Editor")
@@ -123,6 +140,7 @@ async def get_all_settings() -> dict:
         "TWILIO_WA_SID", "TWILIO_WA_TOKEN", "TWILIO_WA_FROM",
         "ENABLED_TOOLS",
         "WALLET_BALANCE", "LOW_BALANCE_THRESHOLD",
+        "VOICE_ENGINE", "TTS_VOICE",
     ]
     db_rows = {}
     try:
