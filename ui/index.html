@@ -894,21 +894,21 @@ tr:last-child td { border-bottom: none; }
         <div class="grid grid-2 gap-4">
           <div class="form-group">
             <label>Voice Engine Architecture (`VOICE_ENGINE`)</label>
-            <select id="set-voice-engine">
+            <select id="voice_engine_select">
               <option value="gemini_realtime">Gemini Realtime (Native Multimodal Audio - Sub-300ms)</option>
               <option value="modular_pipeline">Modular Pipeline (Deepgram + Gemini LLM + Google Cloud TTS)</option>
             </select>
           </div>
           <div class="form-group">
             <label>LLM Reasoning Model (`GEMINI_MODEL`)</label>
-            <select id="set-voice-model">
-              <option value="gemini-2.0-flash">gemini-2.0-flash (Fast & Multilingual)</option>
+            <select id="gemini_model_select">
               <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash (Fast & Multilingual)</option>
             </select>
           </div>
           <div class="form-group">
             <label>TTS Voice Synthesis (`TTS_VOICE`)</label>
-            <select id="set-voice-tts">
+            <select id="tts_voice_select">
               <optgroup label="Gemini Realtime Voices">
                 <option value="Aoede">Aoede - Gemini Female (Natural Hindi)</option>
                 <option value="Puck">Puck - Gemini Male (Natural Hindi)</option>
@@ -922,14 +922,14 @@ tr:last-child td { border-bottom: none; }
           </div>
           <div class="form-group">
             <label>STT Speech Transcriber (`STT_MODEL`)</label>
-            <select id="set-voice-stt">
+            <select id="stt_model_select">
               <option value="gemini_native">Gemini Native Audio STT</option>
               <option value="deepgram_nova3">Deepgram nova-3 (Multi-lingual / Hindi)</option>
               <option value="nova-3">Deepgram nova-3 (Multi-lingual / Hindi)</option>
             </select>
           </div>
         </div>
-        <button class="btn btn-sm btn-primary" style="margin-top:0.75rem;" onclick="saveVoiceArchitecture()">⚡ Save Voice Configuration</button>
+        <button class="btn btn-sm btn-primary" id="save_voice_config_btn" style="margin-top:0.75rem;" onclick="saveVoiceConfig()">⚡ Save Voice Configuration</button>
       </div>
 
       <!-- LiveKit -->
@@ -1961,10 +1961,10 @@ const SETTINGS_MAP = {
   'set-cal-key':'CALCOM_API_KEY',
   'set-cal-event':'CALCOM_EVENT_TYPE_ID',
   'set-cal-tz':'CALCOM_TIMEZONE',
-  'set-voice-engine':'VOICE_ENGINE',
-  'set-voice-model':'GEMINI_MODEL',
-  'set-voice-tts':'TTS_VOICE',
-  'set-voice-stt':'STT_MODEL'
+  'voice_engine_select':'VOICE_ENGINE',
+  'gemini_model_select':'GEMINI_MODEL',
+  'tts_voice_select':'TTS_VOICE',
+  'stt_model_select':'STT_MODEL'
 };
 
 async function loadSettings() {
@@ -1984,15 +1984,24 @@ async function loadSettings() {
         } else {
           el.placeholder = "Enter key / secret...";
         }
-      } else {
-        if (info.value !== undefined && info.value !== null && info.value !== '') {
-          el.value = info.value;
-        }
-      }
+    if ($('voice_engine_select') && settings.VOICE_ENGINE) {
+      const ve = typeof settings.VOICE_ENGINE === 'object' ? settings.VOICE_ENGINE.value : settings.VOICE_ENGINE;
+      if (ve) $('voice_engine_select').value = ve;
     }
-
-    if ($('set-voice-model') && $('set-gemini-model') && $('set-voice-model').value) {
-      $('set-gemini-model').value = $('set-voice-model').value;
+    if ($('gemini_model_select') && settings.GEMINI_MODEL) {
+      const gm = typeof settings.GEMINI_MODEL === 'object' ? settings.GEMINI_MODEL.value : settings.GEMINI_MODEL;
+      if (gm) $('gemini_model_select').value = gm;
+    }
+    if ($('tts_voice_select') && settings.TTS_VOICE) {
+      const tv = typeof settings.TTS_VOICE === 'object' ? settings.TTS_VOICE.value : settings.TTS_VOICE;
+      if (tv) $('tts_voice_select').value = tv;
+    }
+    if ($('stt_model_select') && settings.STT_MODEL) {
+      const sm = typeof settings.STT_MODEL === 'object' ? settings.STT_MODEL.value : settings.STT_MODEL;
+      if (sm) $('stt_model_select').value = sm;
+    }
+    if ($('gemini_model_select') && $('set-gemini-model') && $('gemini_model_select').value) {
+      $('set-gemini-model').value = $('gemini_model_select').value;
     }
 
     // Direct, reliable badge visibility updates
@@ -2020,11 +2029,14 @@ async function loadSettings() {
   }
 }
 
-window.saveVoiceArchitecture = async () => {
-  const modelVal = $('set-voice-model').value || 'gemini-2.0-flash';
-  const ttsVal = $('set-voice-tts').value || 'Aoede';
-  const engineVal = $('set-voice-engine').value || 'gemini_realtime';
-  const sttVal = $('set-voice-stt').value || 'gemini_native';
+async function saveVoiceConfig() {
+  const btn = $('save_voice_config_btn');
+  if (btn) btn.disabled = true;
+
+  const engineVal = $('voice_engine_select') ? $('voice_engine_select').value : 'gemini_realtime';
+  const modelVal  = $('gemini_model_select') ? $('gemini_model_select').value : 'gemini-2.0-flash-exp';
+  const ttsVal    = $('tts_voice_select') ? $('tts_voice_select').value : 'Aoede';
+  const sttVal    = $('stt_model_select') ? $('stt_model_select').value : 'gemini_native';
 
   if ($('set-gemini-model')) {
     $('set-gemini-model').value = modelVal;
@@ -2038,15 +2050,29 @@ window.saveVoiceArchitecture = async () => {
     GEMINI_TTS_VOICE: ttsVal,
     USE_GEMINI_REALTIME: (engineVal === 'gemini_realtime') ? 'true' : 'false'
   };
+
   try {
     toast('Saving Voice Architecture Configuration...', 'info');
-    await apiPost('/api/settings', payload);
-    toast('Voice Configuration Saved Successfully!', 'ok');
-    await loadSettings();
-  } catch (e) {
-    toast('Failed to save voice settings: ' + (e.message || e), 'err');
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (res.ok && (data.status === 'ok' || data.status === 'saved')) {
+      toast('Voice Configuration Saved Successfully!', 'ok');
+      // Do NOT wipe or reset selected values!
+    } else {
+      toast('Failed to save: ' + (data.error || 'Server error'), 'err');
+    }
+  } catch (err) {
+    toast('Network error saving settings: ' + err, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
   }
-};
+}
+window.saveVoiceConfig = saveVoiceConfig;
+window.saveVoiceArchitecture = saveVoiceConfig;
 
 window.saveSettingsGroup = async (group, formIds) => {
   const settings = {};

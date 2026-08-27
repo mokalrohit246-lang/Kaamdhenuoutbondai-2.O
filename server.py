@@ -475,19 +475,30 @@ async def api_get_settings():
 
 
 @app.post("/api/settings")
-async def api_save_settings(req: SettingsRequest):
-    filtered = {k: v for k, v in req.settings.items() if v is not None and v != ""}
-    if "GEMINI_MODEL" in filtered:
-        filtered["gemini_model"] = filtered["GEMINI_MODEL"]
-    if "TTS_VOICE" in filtered:
-        filtered["GEMINI_TTS_VOICE"] = filtered["TTS_VOICE"]
-    if "VOICE_ENGINE" in filtered:
-        filtered["USE_GEMINI_REALTIME"] = "true" if filtered["VOICE_ENGINE"] == "gemini_realtime" else "false"
+async def api_save_settings(request: Request):
+    try:
+        body = await request.json()
+        payload = body.get("settings", body) if isinstance(body, dict) else {}
+        if not payload:
+            return {"status": "ok", "saved_keys": []}
+            
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
-    await save_settings(filtered)
-    for k, v in filtered.items():
-        os.environ[k] = str(v)
-    return {"status": "saved", "count": len(filtered)}
+        if "GEMINI_MODEL" in payload:
+            payload["gemini_model"] = payload["GEMINI_MODEL"]
+        if "TTS_VOICE" in payload:
+            payload["GEMINI_TTS_VOICE"] = payload["TTS_VOICE"]
+        if "VOICE_ENGINE" in payload:
+            payload["USE_GEMINI_REALTIME"] = "true" if payload["VOICE_ENGINE"] == "gemini_realtime" else "false"
+
+        await save_settings(payload)
+        for k, v in payload.items():
+            if v is not None:
+                os.environ[str(k)] = str(v)
+        return {"status": "ok", "saved_keys": list(payload.keys())}
+    except Exception as exc:
+        logger.error("Error saving settings: %s", exc)
+        return JSONResponse({"status": "error", "error": str(exc)}, status_code=500)
 
 
 def _get_phone_variants(p: str) -> list:
