@@ -140,7 +140,7 @@ async def get_all_settings() -> dict:
         "TWILIO_WA_SID", "TWILIO_WA_TOKEN", "TWILIO_WA_FROM",
         "ENABLED_TOOLS",
         "WALLET_BALANCE", "LOW_BALANCE_THRESHOLD",
-        "VOICE_ENGINE", "TTS_VOICE",
+        "VOICE_ENGINE", "TTS_VOICE", "STT_MODEL",
     ]
     db_rows = {}
     try:
@@ -158,8 +158,23 @@ async def get_all_settings() -> dict:
             effective_val = env_val if env_val.startswith("ST_") else (db_val if db_val.startswith("ST_") else (env_val or db_val))
         elif k == "INBOUND_DISPATCH_RULE_ID":
             effective_val = env_val if env_val.startswith("SDR_") else (db_val if db_val.startswith("SDR_") else (env_val or db_val))
+        elif k in ("VOICE_ENGINE", "GEMINI_MODEL", "TTS_VOICE", "STT_MODEL", "GEMINI_TTS_VOICE", "USE_GEMINI_REALTIME"):
+            default_map = {
+                "VOICE_ENGINE": "gemini_realtime",
+                "GEMINI_MODEL": "gemini-2.0-flash",
+                "TTS_VOICE": "Aoede",
+                "STT_MODEL": "gemini_native",
+                "GEMINI_TTS_VOICE": "Aoede",
+                "USE_GEMINI_REALTIME": "true"
+            }
+            if db_val and db_val != "":
+                effective_val = db_val
+            elif env_val and env_val != "" and "3.1" not in env_val and "preview" not in env_val:
+                effective_val = env_val
+            else:
+                effective_val = default_map.get(k, "")
         else:
-            effective_val = env_val if env_val else db_val
+            effective_val = db_val if db_val else env_val
         is_configured = bool(effective_val)
         if k in SENSITIVE_KEYS:
             out[k] = {"value": "", "configured": is_configured, "source": "env" if env_val else "db" if db_val else "none"}
@@ -184,17 +199,32 @@ async def save_settings(data: dict) -> None:
 
 
 async def get_setting(key: str, default: str = "") -> str:
-    env_val = os.getenv(key, "").strip()
-    if env_val:
-        return env_val
+    # 1. Try DB first for dynamically configured keys
     try:
         db = await _adb()
-        result = await db.table("settings").select("value").eq("key", key).maybe_single().execute()
-        if result and result.data:
-            return result.data["value"]
+        result = await db.table("settings").select("value").eq("key", key).limit(1).execute()
+        if result and result.data and len(result.data) > 0:
+            db_val = (result.data[0].get("value") or "").strip()
+            if db_val:
+                return db_val
     except Exception:
         pass
-    return DEFAULTS.get(key, default)
+
+    # 2. Fall back to environment variable if valid
+    env_val = os.getenv(key, "").strip()
+    if env_val and "3.1" not in env_val and "preview" not in env_val:
+        return env_val
+
+    # 3. Fall back to default
+    defaults = {
+        "VOICE_ENGINE": "gemini_realtime",
+        "GEMINI_MODEL": "gemini-2.0-flash",
+        "TTS_VOICE": "Aoede",
+        "STT_MODEL": "gemini_native",
+        "USE_GEMINI_REALTIME": "true",
+        "GEMINI_TTS_VOICE": "Aoede"
+    }
+    return defaults.get(key, default)
 
 
 async def set_setting(key: str, value: str) -> None:

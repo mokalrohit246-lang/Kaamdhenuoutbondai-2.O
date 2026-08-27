@@ -477,6 +477,13 @@ async def api_get_settings():
 @app.post("/api/settings")
 async def api_save_settings(req: SettingsRequest):
     filtered = {k: v for k, v in req.settings.items() if v is not None and v != ""}
+    if "GEMINI_MODEL" in filtered:
+        filtered["gemini_model"] = filtered["GEMINI_MODEL"]
+    if "TTS_VOICE" in filtered:
+        filtered["GEMINI_TTS_VOICE"] = filtered["TTS_VOICE"]
+    if "VOICE_ENGINE" in filtered:
+        filtered["USE_GEMINI_REALTIME"] = "true" if filtered["VOICE_ENGINE"] == "gemini_realtime" else "false"
+        
     await save_settings(filtered)
     for k, v in filtered.items():
         os.environ[k] = str(v)
